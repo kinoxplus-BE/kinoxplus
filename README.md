@@ -1,4 +1,4 @@
-# GRAFLIX Backend
+# KinoXplus Backend
 
 Digital entertainment platform. Core differentiator: **synced Watch Rooms** — watch together, in perfect sync, with voice + text chat.
 
