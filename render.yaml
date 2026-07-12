@@ -1,18 +1,18 @@
 databases:
-  - name: graflix-db
+  - name: kinoxplus-db
     plan: starter
-    databaseName: graflix
-    user: graflix
+    databaseName: kinoxplus
+    user: kinoxplus
     region: frankfurt
 
-  - name: graflix-redis
+  - name: kinoxplus-redis
     plan: starter
     type: redis
     region: frankfurt
     maxmemoryPolicy: allkeys-lru
 
 services:
-  - name: graflix-api
+  - name: kinoxplus-api
     type: web
     runtime: docker
     plan: starter
@@ -35,11 +35,11 @@ services:
         sync: false
       - key: DATABASE_URL
         fromDatabase:
-          name: graflix-db
+          name: kinoxplus-db
           property: connectionString
       - key: REDIS_URL
         fromService:
-          name: graflix-redis
+          name: kinoxplus-redis
           type: redis
           property: connectionString
       - key: JWT_ACCESS_SECRET
@@ -80,7 +80,7 @@ services:
       - key: TERMII_API_KEY
         sync: false
       - key: TERMII_SENDER_ID
-        value: GRAFLIX
+        value: KINOXPLUS
       - key: FCM_PROJECT_ID
         sync: false
       - key: FCM_CLIENT_EMAIL

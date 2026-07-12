@@ -1,7 +1,7 @@
 {
-  "name": "graflix-backend",
+  "name": "kinoxplus-backend",
   "version": "0.0.1",
-  "description": "GRAFLIX backend — digital entertainment platform with synced Watch Rooms (NestJS + Prisma + Redis + Socket.io + LiveKit)",
+  "description": "KinoX+ backend — digital entertainment platform with synced Watch Rooms (NestJS + Prisma + Redis + Socket.io + LiveKit)",
   "author": "",
   "private": true,
   "license": "UNLICENSED",

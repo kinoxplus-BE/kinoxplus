@@ -2,16 +2,16 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: graflix
-      POSTGRES_PASSWORD: graflix
-      POSTGRES_DB: graflix
+      POSTGRES_USER: kinoxplus
+      POSTGRES_PASSWORD: kinoxplus
+      POSTGRES_DB: kinoxplus
     ports:
       # 5435 on the host — 5432-5434 are commonly taken by local Postgres installs.
       - '5435:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U graflix -d graflix']
+      test: ['CMD-SHELL', 'pg_isready -U kinoxplus -d kinoxplus']
       interval: 5s
       timeout: 3s
       retries: 10

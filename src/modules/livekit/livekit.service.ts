@@ -40,7 +40,7 @@ export class LivekitService {
   }
 
   roomName(roomId: string): string {
-    return `graflix-room-${roomId}`;
+    return `kinoxplus-room-${roomId}`;
   }
 
   async mintToken(
