@@ -1,0 +1,91 @@
+databases:
+  - name: graflix-db
+    plan: starter
+    databaseName: graflix
+    user: graflix
+    region: frankfurt
+
+  - name: graflix-redis
+    plan: starter
+    type: redis
+    region: frankfurt
+    maxmemoryPolicy: allkeys-lru
+
+services:
+  - name: graflix-api
+    type: web
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    repo: https://github.com/kinoxplus-BE/kinoxplus.git
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    preDeployCommand: npx prisma migrate deploy
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      - key: API_URL
+        sync: false
+      - key: WEB_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: graflix-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: graflix-redis
+          type: redis
+          property: connectionString
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_TTL
+        value: "900"
+      - key: JWT_REFRESH_TTL
+        value: "2592000"
+      - key: ARGON2_MEMORY_COST
+        value: "19456"
+      # --- Optional (set when ready) ---
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_STREAM_API_TOKEN
+        sync: false
+      - key: CF_STREAM_SIGNING_KEY_ID
+        sync: false
+      - key: CF_STREAM_SIGNING_KEY_PEM
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_WEBHOOK_SECRET
+        sync: false
+      - key: FLUTTERWAVE_SECRET_KEY
+        sync: false
+      - key: FLUTTERWAVE_WEBHOOK_HASH
+        sync: false
+      - key: BREVO_API_KEY
+        sync: false
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        value: GRAFLIX
+      - key: FCM_PROJECT_ID
+        sync: false
+      - key: FCM_CLIENT_EMAIL
+        sync: false
+      - key: FCM_PRIVATE_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
