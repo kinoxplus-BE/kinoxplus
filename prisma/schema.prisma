@@ -1,0 +1,265 @@
+// GRAFLIX data model — MVP-focused, extensible.
+// [POST-MVP] models are stubbed so migrations don't churn later.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs" // project compiles to CommonJS (nest build + ts-node)
+}
+
+// Connection URL lives in prisma.config.ts (Prisma 7) and is passed to
+// PrismaClient via the pg driver adapter at runtime.
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Identity ----------
+model User {
+  id            String   @id @default(cuid())
+  email         String?  @unique
+  phone         String?  @unique
+  passwordHash  String?
+  displayName   String
+  avatarUrl     String?
+  role          Role     @default(USER)
+  emailVerified Boolean  @default(false)
+  phoneVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  devices       Device[]
+  refreshTokens RefreshToken[]
+  subscription  Subscription?
+  ownedRooms    Room[]         @relation("RoomHost")
+  memberships   RoomMember[]
+  chatMessages  ChatMessage[]
+  watchHistory  WatchHistory[]
+
+  @@index([role])
+}
+
+enum Role {
+  USER
+  ADMIN
+  SUPPORT
+}
+
+model Device {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fcmToken  String   @unique
+  platform  String // ios | android | web
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model OtpChallenge {
+  id         String    @id @default(cuid())
+  identifier String // email or phone
+  codeHash   String
+  purpose    String // login | verify | reset
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  @@index([identifier])
+}
+
+// ---------- Catalog ----------
+model Title {
+  id            String      @id @default(cuid())
+  slug          String      @unique
+  name          String
+  description   String?
+  type          TitleType   @default(MOVIE)
+  year          Int?
+  durationSec   Int?
+  posterUrl     String?
+  // Cloudflare Stream video id (null until ingested & ready)
+  streamVideoId String?     @unique
+  status        TitleStatus @default(DRAFT)
+  // licensing metadata — proof the client cleared rights
+  licenseSource String?
+  licenseExpiry DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  genres       GenreOnTitle[]
+  rooms        Room[]
+  watchHistory WatchHistory[]
+
+  @@index([status])
+  @@index([type])
+}
+
+enum TitleType {
+  MOVIE
+  SERIES
+  EPISODE
+}
+
+enum TitleStatus {
+  DRAFT
+  PROCESSING
+  READY
+  ARCHIVED
+}
+
+model Genre {
+  id     String         @id @default(cuid())
+  name   String         @unique
+  titles GenreOnTitle[]
+}
+
+model GenreOnTitle {
+  titleId String
+  genreId String
+  title   Title  @relation(fields: [titleId], references: [id], onDelete: Cascade)
+  genre   Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+
+  @@id([titleId, genreId])
+}
+
+// ---------- Watch Rooms (⭐ core) ----------
+model Room {
+  id         String     @id @default(cuid())
+  code       String     @unique // shareable invite code
+  hostId     String
+  host       User       @relation("RoomHost", fields: [hostId], references: [id])
+  titleId    String
+  title      Title      @relation(fields: [titleId], references: [id])
+  status     RoomStatus @default(LOBBY)
+  isPrivate  Boolean    @default(true)
+  maxMembers Int        @default(20)
+  // authoritative playback state (also cached in Redis for hot reads)
+  positionSec Float    @default(0)
+  isPlaying   Boolean  @default(false)
+  lastSyncAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  endedAt     DateTime?
+
+  members  RoomMember[]
+  messages ChatMessage[]
+
+  @@index([hostId])
+  @@index([status])
+}
+
+enum RoomStatus {
+  LOBBY
+  PLAYING
+  PAUSED
+  ENDED
+}
+
+model RoomMember {
+  id       String    @id @default(cuid())
+  roomId   String
+  room     Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isMuted  Boolean   @default(false) // admin-controlled voice mute
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  @@unique([roomId, userId])
+  @@index([roomId])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  roomId    String
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([roomId, createdAt])
+}
+
+// ---------- Subscriptions & Payments ----------
+model Plan {
+  id            String         @id @default(cuid())
+  name          String
+  priceKobo     Int // store minor units (kobo). Naira * 100
+  currency      String         @default("NGN")
+  intervalDays  Int            @default(30)
+  isActive      Boolean        @default(true)
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId           String
+  plan             Plan      @relation(fields: [planId], references: [id])
+  status           SubStatus @default(INACTIVE)
+  provider         String // paystack | flutterwave | apple | google
+  providerRef      String?
+  currentPeriodEnd DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  payments Payment[]
+}
+
+enum SubStatus {
+  INACTIVE
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  provider       String
+  providerRef    String        @unique
+  amountKobo     Int
+  currency       String        @default("NGN")
+  status         PayStatus     @default(PENDING)
+  rawPayload     Json?
+  createdAt      DateTime      @default(now())
+
+  @@index([status])
+}
+
+enum PayStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+// ---------- History / [POST-MVP] ----------
+model WatchHistory {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  titleId     String
+  title       Title    @relation(fields: [titleId], references: [id], onDelete: Cascade)
+  positionSec Float    @default(0)
+  completed   Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, titleId])
+  @@index([userId])
+}
