@@ -11,6 +11,7 @@ services:
     plan: starter
     region: frankfurt
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
 
   - name: kinoxplus-api
     type: web
