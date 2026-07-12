@@ -5,13 +5,13 @@ databases:
     user: kinoxplus
     region: frankfurt
 
+services:
   - name: kinoxplus-redis
-    plan: starter
     type: redis
+    plan: starter
     region: frankfurt
     maxmemoryPolicy: allkeys-lru
 
-services:
   - name: kinoxplus-api
     type: web
     runtime: docker
