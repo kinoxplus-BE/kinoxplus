@@ -44,6 +44,11 @@ export const envSchema = z.object({
   CF_STREAM_SIGNING_KEY_ID: z.string().optional(),
   CF_STREAM_SIGNING_KEY_PEM: z.string().optional(),
 
+  // Cloudinary
+  CLOUDINARY_CLOUD_NAME: z.string().optional(),
+  CLOUDINARY_API_KEY: z.string().optional(),
+  CLOUDINARY_API_SECRET: z.string().optional(),
+
   // Cloudflare R2 / S3
   R2_ACCOUNT_ID: z.string().optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),
@@ -56,8 +61,12 @@ export const envSchema = z.object({
   FLUTTERWAVE_SECRET_KEY: z.string().optional(),
   FLUTTERWAVE_WEBHOOK_HASH: z.string().optional(),
 
-  // Email / SMS
+  // Email (Brevo)
   BREVO_API_KEY: z.string().optional(),
+  BREVO_SENDER_EMAIL: z.string().optional(),
+  BREVO_SENDER_NAME: z.string().optional(),
+
+  // SMS (Termii)
   TERMII_API_KEY: z.string().optional(),
   TERMII_SENDER_ID: z.string().optional(),
 

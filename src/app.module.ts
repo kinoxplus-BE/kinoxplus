@@ -24,6 +24,8 @@ import { RoomsModule } from './modules/rooms/rooms.module';
 import { StreamingModule } from './modules/streaming/streaming.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { UsersModule } from './modules/users/users.module';
+import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
+import { MailModule } from './modules/mail/mail.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
@@ -63,6 +65,8 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     PrismaModule,
     RedisModule,
     JobsModule,
+    MailModule,
+    CloudinaryModule,
 
     // MVP feature modules
     AuthModule,

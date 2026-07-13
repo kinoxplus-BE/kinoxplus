@@ -6,14 +6,14 @@ import { AuthService } from './auth.service';
 
 @Module({
   imports: [
-    // Global so JwtAuthGuard (APP_GUARD) and the rooms gateway can verify
-    // tokens anywhere without re-importing.
     JwtModule.registerAsync({
       global: true,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         secret: config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-        signOptions: { expiresIn: config.getOrThrow<number>('JWT_ACCESS_TTL') },
+        signOptions: {
+          expiresIn: config.get<number>('JWT_ACCESS_TTL', 86_400),
+        },
       }),
     }),
   ],
