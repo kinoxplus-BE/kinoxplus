@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { GENRES } from '../src/common/constants/genres';
 import { PrismaClient, TitleStatus } from '../src/generated/prisma/client';
 
 const prisma = new PrismaClient({
@@ -20,8 +21,9 @@ async function main(): Promise<void> {
     update: {},
   });
 
-  const genreNames = ['Drama', 'Comedy', 'Action', 'Nollywood', 'Documentary'];
-  for (const name of genreNames) {
+  // Canonical genres — same list the signup wizard chips and register
+  // validation use, so GET /catalog/genres can never drift from them.
+  for (const name of GENRES) {
     await prisma.genre.upsert({ where: { name }, create: { name }, update: {} });
   }
 
@@ -42,7 +44,9 @@ async function main(): Promise<void> {
     update: {},
   });
 
-  console.log('Seed complete: 1 plan, 5 genres, 1 demo title.');
+  console.log(
+    `Seed complete: 1 plan, ${GENRES.length} genres, 1 demo title.`,
+  );
 }
 
 main()

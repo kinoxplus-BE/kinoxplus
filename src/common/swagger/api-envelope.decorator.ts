@@ -9,13 +9,16 @@ import { ApiExtraModels, ApiResponse, getSchemaPath } from '@nestjs/swagger';
  */
 export function ApiEnvelope(
   model: Type<unknown> | Type<unknown>[],
-  options: { status?: number; description?: string } = {},
+  options: { status?: number; description?: string; isArray?: boolean } = {},
 ): MethodDecorator & ClassDecorator {
   const models = Array.isArray(model) ? model : [model];
-  const dataSchema =
+  const itemSchema =
     models.length === 1
       ? { $ref: getSchemaPath(models[0]) }
       : { oneOf: models.map((m) => ({ $ref: getSchemaPath(m) })) };
+  const dataSchema = options.isArray
+    ? { type: 'array', items: itemSchema }
+    : itemSchema;
 
   return applyDecorators(
     ApiExtraModels(...models),
