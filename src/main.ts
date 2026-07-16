@@ -17,6 +17,11 @@ async function bootstrap(): Promise<void> {
   });
   app.useLogger(app.get(Logger));
 
+  // Behind Render's load balancer: trust the first proxy hop so req.ip is
+  // the real client IP (X-Forwarded-For). Without this, every request looks
+  // like it comes from the LB and all users share one rate-limit bucket.
+  app.set('trust proxy', 1);
+
   const config = app.get(ConfigService);
 
   const sentryDsn = config.get<string>('SENTRY_DSN');

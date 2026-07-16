@@ -65,19 +65,24 @@ model RefreshToken {
   createdAt DateTime  @default(now())
 
   @@index([userId])
+  // Cleanup job prunes by expiry (see CleanupProcessor).
+  @@index([expiresAt])
 }
 
 model OtpChallenge {
   id         String    @id @default(cuid())
   identifier String // email or phone
   codeHash   String
-  purpose    String // login | verify | reset
+  purpose    String // login | verify | reset | reset_token (server-issued)
   expiresAt  DateTime
   consumedAt DateTime?
   attempts   Int       @default(0)
   createdAt  DateTime  @default(now())
 
-  @@index([identifier])
+  // Matches the lookup shape: identifier + purpose, newest first.
+  @@index([identifier, purpose, createdAt])
+  // Cleanup job prunes by expiry (see CleanupProcessor).
+  @@index([expiresAt])
 }
 
 // ---------- Catalog ----------

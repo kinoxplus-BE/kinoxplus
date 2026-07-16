@@ -24,6 +24,7 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Public()
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('register')
   @ApiOperation({
     summary: 'Register a new account',
@@ -32,11 +33,13 @@ export class AuthController {
   })
   @ApiResponse({ status: 201, description: 'Account created, tokens returned' })
   @ApiResponse({ status: 409, description: 'Email or phone already exists' })
+  @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
   }
 
   @Public()
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @HttpCode(200)
   @Post('login')
   @ApiOperation({
@@ -49,6 +52,7 @@ export class AuthController {
     description: 'Login successful, tokens returned',
   })
   @ApiResponse({ status: 401, description: 'Invalid email or password' })
+  @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
   }
@@ -76,7 +80,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Logout current session',
     description:
-      'Revokes the provided refresh token. Access token remains valid until expiry (max 15m).',
+      'Revokes the provided refresh token. The access token stays valid until it expires (JWT_ACCESS_TTL — keep it short in production, e.g. 15 min).',
   })
   @ApiResponse({ status: 200, description: 'Logged out' })
   logout(@CurrentUser() user: AuthUser, @Body() dto: RefreshDto) {
@@ -105,10 +109,13 @@ export class AuthController {
   @ApiOperation({
     summary: 'Request an OTP code',
     description:
-      'Sends a 6-digit OTP to the given email or phone number. Purpose can be: login (passwordless), verify (email/phone verification), or reset (password reset). Code expires in 10 minutes.',
+      'Sends a 6-digit OTP to the given email or phone number if an account exists (the response is identical either way, so accounts cannot be enumerated). Purpose can be: login (passwordless), verify (email/phone verification), or reset (password reset). Code expires in 10 minutes. Per identifier: 60s resend cooldown and a daily cap.',
   })
-  @ApiResponse({ status: 200, description: 'OTP sent' })
-  @ApiResponse({ status: 429, description: 'Too many requests (5/min)' })
+  @ApiResponse({ status: 200, description: 'Generic acknowledgement' })
+  @ApiResponse({
+    status: 429,
+    description: 'Too many requests (per-IP 5/min, per-identifier cooldown)',
+  })
   requestOtp(@Body() dto: RequestOtpDto) {
     return this.auth.requestOtp(dto);
   }
@@ -120,11 +127,12 @@ export class AuthController {
   @ApiOperation({
     summary: 'Verify an OTP code',
     description:
-      'Verifies the OTP code. Side effects depend on purpose: "verify" marks email/phone as verified, "login" returns tokens, "reset" confirms identity for password reset.',
+      'Verifies the OTP code. Side effects depend on purpose: "verify" marks email/phone as verified, "login" returns tokens, "reset" returns a single-use resetToken (valid 15 min) to pass to POST /auth/reset-password.',
   })
   @ApiResponse({
     status: 200,
-    description: 'OTP verified. Response varies by purpose.',
+    description:
+      'OTP verified. Response varies by purpose (reset → { verified, resetToken, expiresIn }).',
   })
   @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
   @ApiResponse({ status: 403, description: 'Max attempts exceeded' })
@@ -140,9 +148,12 @@ export class AuthController {
   @ApiOperation({
     summary: 'Change password (authenticated)',
     description:
-      'Changes the password for the authenticated user. Requires the current password. Revokes all other sessions.',
+      'Changes the password for the authenticated user. Requires the current password. Revokes all other sessions and returns a fresh token pair for this device.',
   })
-  @ApiResponse({ status: 200, description: 'Password changed' })
+  @ApiResponse({
+    status: 200,
+    description: 'Password changed, new accessToken + refreshToken returned',
+  })
   @ApiResponse({ status: 401, description: 'Current password incorrect' })
   changePassword(
     @CurrentUser() user: AuthUser,
@@ -157,10 +168,13 @@ export class AuthController {
   @ApiOperation({
     summary: 'Reset password with OTP',
     description:
-      'Resets the password using a valid reset OTP. First call POST /auth/otp/request with purpose "reset", then use the received code here along with the new password. Revokes all sessions.',
+      'Resets the password after an OTP requested with purpose "reset". Two supported flows: (1) single-step — send the 6-digit code directly here with the new password; (2) two-step — verify the code via POST /auth/otp/verify first, then send the returned resetToken here instead of the code. Revokes all sessions and emails a security notice.',
   })
   @ApiResponse({ status: 200, description: 'Password reset successful' })
-  @ApiResponse({ status: 400, description: 'Invalid OTP or user not found' })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid OTP/resetToken or user not found',
+  })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.auth.resetPassword(dto);
   }

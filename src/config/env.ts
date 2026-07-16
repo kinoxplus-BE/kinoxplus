@@ -27,9 +27,8 @@ export const envSchema = z.object({
     .string()
     .min(16, 'JWT_ACCESS_SECRET must be at least 16 characters'),
   JWT_ACCESS_TTL: z.coerce.number().int().positive().default(900),
-  JWT_REFRESH_SECRET: z
-    .string()
-    .min(16, 'JWT_REFRESH_SECRET must be at least 16 characters'),
+  // No JWT_REFRESH_SECRET: refresh tokens are opaque randoms stored hashed
+  // in Postgres, not signed JWTs.
   JWT_REFRESH_TTL: z.coerce.number().int().positive().default(2_592_000),
   ARGON2_MEMORY_COST: z.coerce.number().int().positive().default(19_456),
 

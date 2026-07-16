@@ -47,6 +47,8 @@ export class MailService {
         subject: options.subject,
         htmlContent: options.html,
       }),
+      // A hung Brevo connection must never hold a worker indefinitely.
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!response.ok) {
@@ -85,6 +87,14 @@ export class MailService {
       to,
       subject: `Your ${this.appName} login code`,
       html: this.loginOtpTemplate(code),
+    });
+  }
+
+  async sendPasswordChanged(to: string): Promise<void> {
+    await this.send({
+      to,
+      subject: `Your ${this.appName} password was changed`,
+      html: this.passwordChangedTemplate(),
     });
   }
 
@@ -195,6 +205,18 @@ export class MailService {
       </p>
       <p style="margin:0;color:#ef4444;font-size:14px;font-weight:500;">
         If you didn't request a password reset, please secure your account immediately.
+      </p>
+    `);
+  }
+
+  private passwordChangedTemplate(): string {
+    return this.baseLayout(`
+      <h2 style="margin:0 0 16px;color:#111827;font-size:22px;font-weight:600;">Your password was changed</h2>
+      <p style="margin:0 0 24px;color:#4b5563;font-size:16px;line-height:1.6;">
+        The password for your ${this.appName} account was just changed. All other sessions have been signed out.
+      </p>
+      <p style="margin:0;color:#ef4444;font-size:14px;font-weight:500;">
+        If this wasn't you, reset your password immediately and contact support &mdash; someone may have access to your account.
       </p>
     `);
   }

@@ -486,9 +486,12 @@ This is the heart of the product. The **control plane** only. Video is fetched i
 
 ### Redis keys
 ```
-room:{id}:state        # hash { positionSec, isPlaying, lastSyncAt }
-room:{id}:members      # set of userIds present
-presence:user:{id}     # socketId + roomId (TTL)
+room:{id}:state                    # hash { positionSec, isPlaying, lastSyncAt }
+room:{id}:members                  # set of userIds present
+presence:user:{id}                 # socketId + roomId (TTL)
+throttle:{name}:{key}[:blocked]    # rate-limit counters (RedisThrottlerStorage)
+otp:cooldown:{purpose}:{identifier} # 60s OTP resend cooldown (SET NX EX)
+otp:daily:{identifier}             # daily OTP send counter (24h TTL)
 ```
 
 ### Gateway skeleton (`src/modules/rooms/rooms.gateway.ts`)

@@ -9,6 +9,7 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
+import { RedisThrottlerStorage } from './common/throttler/redis-throttler.storage';
 import { validateEnv } from './config/env';
 import { JobsModule } from './jobs/jobs.module';
 import { AdminModule } from './modules/admin/admin.module';
@@ -28,6 +29,7 @@ import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
 import { MailModule } from './modules/mail/mail.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
+import { RedisService } from './redis/redis.service';
 import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
@@ -42,7 +44,14 @@ import { WebhooksModule } from './webhooks/webhooks.module';
       },
     }),
     // Applied per-route (auth, OTP, room create) via @UseGuards(ThrottlerGuard).
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 30 }]),
+    // Counters live in Redis so limits hold across instances/restarts.
+    ThrottlerModule.forRootAsync({
+      inject: [RedisService],
+      useFactory: (redis: RedisService) => ({
+        throttlers: [{ ttl: 60_000, limit: 30 }],
+        storage: new RedisThrottlerStorage(redis.client),
+      }),
+    }),
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
