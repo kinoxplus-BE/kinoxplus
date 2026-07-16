@@ -1,4 +1,12 @@
-import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -19,8 +27,10 @@ import {
   PasswordChangedDto,
   ResetTokenDto,
   TokenPairDto,
+  UsernameAvailabilityDto,
 } from './dto/auth-responses.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { CheckUsernameDto } from './dto/check-username.dto';
 import { LoginDto } from './dto/login.dto';
 import { RequestOtpDto, VerifyOtpDto } from './dto/otp.dto';
 import { RefreshDto } from './dto/refresh.dto';
@@ -37,18 +47,37 @@ export class AuthController {
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('register')
   @ApiOperation({
-    summary: 'Register a new account',
+    summary: 'Register a new account (signup wizard submit)',
     description:
-      'Creates a new user with email + password. Returns access and refresh tokens. Sends a welcome email.',
+      'One-shot submit for the 3-step signup wizard: personal details (fullName, email, password, dateOfBirth — 13+), categories (preferredGenres, min 3), profile (username, avatarColor, bio). Creates the account, returns tokens, and auto-sends the email verification OTP — land the user on the "Check your email" screen and call POST /auth/otp/verify with purpose "verify". Duplicate errors are field-specific: EMAIL_EXISTS, USERNAME_TAKEN, PHONE_EXISTS.',
   })
   @ApiEnvelope(AuthSessionDto, {
     status: 201,
     description: 'Account created, tokens returned',
   })
-  @ApiResponse({ status: 409, description: 'Email or phone already exists' })
+  @ApiResponse({
+    status: 409,
+    description: 'EMAIL_EXISTS | USERNAME_TAKEN | PHONE_EXISTS',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation failed, INVALID_DOB, or AGE_RESTRICTION',
+  })
   @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
+  }
+
+  @Public()
+  @Get('username-available')
+  @ApiOperation({
+    summary: 'Check username availability',
+    description:
+      'Case-insensitive availability check for signup step 3 — call before submitting so "taken" is caught in the wizard, not after.',
+  })
+  @ApiEnvelope(UsernameAvailabilityDto, { description: 'Availability result' })
+  usernameAvailable(@Query() dto: CheckUsernameDto) {
+    return this.auth.usernameAvailable(dto.username);
   }
 
   @Public()

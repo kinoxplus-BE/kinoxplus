@@ -15,17 +15,26 @@ datasource db {
 
 // ---------- Identity ----------
 model User {
-  id            String   @id @default(cuid())
-  email         String?  @unique
-  phone         String?  @unique
+  id            String    @id @default(cuid())
+  email         String?   @unique
+  phone         String?   @unique
+  // Handle shown to friends in rooms (signup step 3). Stored lowercase.
+  username      String?   @unique
   passwordHash  String?
+  // Full legal-ish name from signup step 1 ("Ada Lovelace").
   displayName   String
   avatarUrl     String?
-  role          Role     @default(USER)
-  emailVerified Boolean  @default(false)
-  phoneVerified Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  // One of the signup swatches (hex), placeholder until an avatar upload.
+  avatarColor   String?
+  bio           String?
+  dateOfBirth   DateTime?
+  // Signup step 2: >=3 canonical genre names (see common/constants/genres).
+  preferredGenres String[] @default([])
+  role          Role      @default(USER)
+  emailVerified Boolean   @default(false)
+  phoneVerified Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   devices       Device[]
   refreshTokens RefreshToken[]

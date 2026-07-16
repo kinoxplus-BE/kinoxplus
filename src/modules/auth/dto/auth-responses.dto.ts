@@ -14,11 +14,33 @@ export class AuthUserDto {
   @ApiProperty({ enum: Role, example: Role.USER })
   role!: Role;
 
-  @ApiProperty({ example: 'john@example.com', nullable: true, type: String })
+  @ApiProperty({ example: 'ada@example.com', nullable: true, type: String })
   email!: string | null;
 
-  @ApiProperty({ example: 'John' })
+  @ApiProperty({
+    example: 'priyan',
+    nullable: true,
+    type: String,
+    description: 'Handle shown to friends in rooms (lowercase)',
+  })
+  username!: string | null;
+
+  @ApiProperty({ example: 'Ada Lovelace', description: 'Full name' })
   displayName!: string;
+
+  @ApiProperty({ example: '#3652D9', nullable: true, type: String })
+  avatarColor!: string | null;
+
+  @ApiProperty({
+    example: false,
+    description: 'False until the signup OTP is verified',
+  })
+  emailVerified!: boolean;
+}
+
+export class UsernameAvailabilityDto {
+  @ApiProperty({ example: true })
+  available!: boolean;
 }
 
 export class TokenPairDto {

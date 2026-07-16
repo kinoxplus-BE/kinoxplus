@@ -1,14 +1,19 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import { IsIn, IsString, Length, MinLength } from 'class-validator';
 
 const OTP_PURPOSES = ['login', 'verify', 'reset'] as const;
 export type OtpPurpose = (typeof OTP_PURPOSES)[number];
+
+const lowercaseTrim = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.toLowerCase().trim() : value;
 
 export class RequestOtpDto {
   @ApiProperty({
     example: 'john@example.com',
     description: 'Email address or E.164 phone number',
   })
+  @Transform(lowercaseTrim)
   @IsString()
   @MinLength(3)
   identifier!: string;
@@ -23,6 +28,7 @@ export class VerifyOtpDto {
     example: 'john@example.com',
     description: 'Same identifier used in request',
   })
+  @Transform(lowercaseTrim)
   @IsString()
   @MinLength(3)
   identifier!: string;

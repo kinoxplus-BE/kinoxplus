@@ -13,13 +13,17 @@ import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { timingSafeEqual } from 'node:crypto';
+import {
+  isUniqueViolation,
+  uniqueViolationTarget,
+} from '../../common/utils/prisma-errors';
 import type { Role } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { MailQueue } from '../mail/mail.queue';
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { LoginDto } from './dto/login.dto';
-import type { RequestOtpDto, VerifyOtpDto } from './dto/otp.dto';
+import type { OtpPurpose, RequestOtpDto, VerifyOtpDto } from './dto/otp.dto';
 import type { RefreshDto } from './dto/refresh.dto';
 import type { RegisterDto } from './dto/register.dto';
 import type { ResetPasswordDto } from './dto/reset-password.dto';
@@ -32,16 +36,18 @@ const RESET_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
 // Server-side purpose for the single-use token issued by verifyOtp(reset).
 // Never accepted from clients (DTO whitelist is login|verify|reset).
 const RESET_TOKEN_PURPOSE = 'reset_token';
+const MIN_AGE_YEARS = 13;
 
-/** Prisma unique-constraint violation (duplicate key). */
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: unknown }).code === 'P2002'
-  );
-}
+// Returned by register/login/verifyOtp(login) — what the app needs to render.
+const SESSION_USER_SELECT = {
+  id: true,
+  role: true,
+  email: true,
+  username: true,
+  displayName: true,
+  avatarColor: true,
+  emailVerified: true,
+} as const;
 
 @Injectable()
 export class AuthService {
@@ -72,62 +78,75 @@ export class AuthService {
   // ────────────────────── Register ──────────────────────
 
   async register(dto: RegisterDto) {
-    const existing = await this.prisma.user.findFirst({
+    this.assertMinimumAge(dto.dateOfBirth);
+
+    const clash = await this.prisma.user.findFirst({
       where: {
         OR: [
           { email: dto.email },
+          { username: dto.username },
           ...(dto.phone ? [{ phone: dto.phone }] : []),
         ],
       },
-      select: { id: true },
+      select: { email: true, username: true },
     });
-    if (existing) {
-      throw new ConflictException({
-        code: 'USER_EXISTS',
-        message: 'An account with this email or phone already exists.',
-      });
+    if (clash) {
+      if (clash.email === dto.email) throw this.duplicateUserError('email');
+      if (clash.username === dto.username)
+        throw this.duplicateUserError('username');
+      throw this.duplicateUserError('phone');
     }
 
     const passwordHash = await argon2.hash(dto.password, this.argon2Options);
-    let user: {
-      id: string;
-      role: Role;
-      email: string | null;
-      displayName: string;
-    };
-    try {
-      user = await this.prisma.user.create({
+    const user = await this.prisma.user
+      .create({
         data: {
           email: dto.email,
           phone: dto.phone,
+          username: dto.username,
           passwordHash,
-          displayName: dto.displayName,
+          displayName: dto.fullName,
+          dateOfBirth: new Date(dto.dateOfBirth),
+          preferredGenres: dto.preferredGenres,
+          avatarColor: dto.avatarColor,
+          bio: dto.bio,
         },
-        select: { id: true, role: true, email: true, displayName: true },
+        select: SESSION_USER_SELECT,
+      })
+      .catch((err: unknown) => {
+        // Concurrent register slips past the pre-check; map the unique
+        // violation to the same field-specific 409 instead of a 500.
+        if (isUniqueViolation(err)) {
+          const target = uniqueViolationTarget(err);
+          if (target.includes('username'))
+            throw this.duplicateUserError('username');
+          if (target.includes('phone')) throw this.duplicateUserError('phone');
+          throw this.duplicateUserError('email');
+        }
+        throw err;
       });
-    } catch (err) {
-      // Concurrent register with the same email/phone slips past the
-      // pre-check; surface it as the same 409 instead of a 500.
-      if (isUniqueViolation(err)) {
-        throw new ConflictException({
-          code: 'USER_EXISTS',
-          message: 'An account with this email or phone already exists.',
-        });
-      }
-      throw err;
-    }
 
     const tokens = await this.issueTokens(user.id, user.role);
 
     if (user.email) {
-      this.mailQueue
-        .queueWelcome(user.email, user.displayName)
-        .catch((err) =>
-          this.logger.error('Failed to queue welcome email', err),
-        );
+      // Land the user on the "Check your email" screen with the code already
+      // sent. Fire-and-forget: "Resend code" covers delivery hiccups. The
+      // welcome email goes out later, once verification succeeds.
+      this.sendSignupVerificationOtp(user.email).catch((err) =>
+        this.logger.error('Failed to send signup verification OTP', err),
+      );
     }
 
     return { user, ...tokens };
+  }
+
+  /** Signup step-3 helper: case-insensitive availability check. */
+  async usernameAvailable(username: string) {
+    const existing = await this.prisma.user.findUnique({
+      where: { username },
+      select: { id: true },
+    });
+    return { available: !existing };
   }
 
   // ────────────────────── Login ──────────────────────
@@ -135,13 +154,7 @@ export class AuthService {
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
-      select: {
-        id: true,
-        role: true,
-        email: true,
-        displayName: true,
-        passwordHash: true,
-      },
+      select: { ...SESSION_USER_SELECT, passwordHash: true },
     });
     if (!user || !user.passwordHash) {
       // Burn the same argon2 cost as a real check before rejecting.
@@ -250,39 +263,7 @@ export class AuthService {
     });
     if (!user) return genericResponse;
 
-    const code = this.generateOtpCode();
-    const codeHash = this.hashOtp(code);
-
-    // Invalidate existing unexpired OTPs for same identifier+purpose.
-    await this.prisma.otpChallenge.updateMany({
-      where: {
-        identifier: dto.identifier,
-        purpose: dto.purpose,
-        consumedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      data: { consumedAt: new Date() },
-    });
-
-    await this.prisma.otpChallenge.create({
-      data: {
-        identifier: dto.identifier,
-        codeHash,
-        purpose: dto.purpose,
-        expiresAt: new Date(Date.now() + OTP_TTL_MS),
-      },
-    });
-
-    if (isEmail) {
-      // Enqueued, not sent inline: Brevo latency/outages never block or
-      // fail this endpoint; the queue retries with backoff.
-      await this.mailQueue.queueOtp(dto.identifier, code, dto.purpose);
-    } else {
-      // Phone OTP — Termii integration (sprint 2 extension).
-      this.logger.log(
-        `[DEV] OTP for ${dto.identifier}: ${code} (SMS delivery not configured)`,
-      );
-    }
+    await this.createAndDeliverOtp(dto.identifier, dto.purpose);
 
     return genericResponse;
   }
@@ -293,16 +274,28 @@ export class AuthService {
     // Handle purpose-specific side effects.
     if (dto.purpose === 'verify') {
       const isEmail = dto.identifier.includes('@');
-      if (isEmail) {
-        await this.prisma.user.updateMany({
-          where: { email: dto.identifier },
-          data: { emailVerified: true },
+      const user = await this.prisma.user.findFirst({
+        where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          emailVerified: true,
+        },
+      });
+      if (user) {
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: isEmail ? { emailVerified: true } : { phoneVerified: true },
         });
-      } else {
-        await this.prisma.user.updateMany({
-          where: { phone: dto.identifier },
-          data: { phoneVerified: true },
-        });
+        // Welcome email once the address is proven real (first verify only).
+        if (isEmail && user.email && !user.emailVerified) {
+          this.mailQueue
+            .queueWelcome(user.email, user.displayName)
+            .catch((err) =>
+              this.logger.error('Failed to queue welcome email', err),
+            );
+        }
       }
       return { verified: true };
     }
@@ -311,7 +304,7 @@ export class AuthService {
       const isEmail = dto.identifier.includes('@');
       const user = await this.prisma.user.findFirst({
         where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
-        select: { id: true, role: true, email: true, displayName: true },
+        select: SESSION_USER_SELECT,
       });
       if (!user) {
         throw new BadRequestException({
@@ -601,6 +594,105 @@ export class AuthService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
+  }
+
+  /**
+   * Creates a fresh challenge for identifier+purpose (invalidating previous
+   * ones) and delivers it. Callers handle rate limiting: requestOtp enforces
+   * limits first, the signup path primes the cooldown instead.
+   */
+  private async createAndDeliverOtp(
+    identifier: string,
+    purpose: OtpPurpose,
+  ): Promise<void> {
+    const code = this.generateOtpCode();
+
+    await this.prisma.otpChallenge.updateMany({
+      where: {
+        identifier,
+        purpose,
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      data: { consumedAt: new Date() },
+    });
+
+    await this.prisma.otpChallenge.create({
+      data: {
+        identifier,
+        codeHash: this.hashOtp(code),
+        purpose,
+        expiresAt: new Date(Date.now() + OTP_TTL_MS),
+      },
+    });
+
+    if (identifier.includes('@')) {
+      // Enqueued, not sent inline: Brevo latency/outages never block or
+      // fail the endpoint; the queue retries with backoff.
+      await this.mailQueue.queueOtp(identifier, code, purpose);
+    } else {
+      // Phone OTP — Termii integration (sprint 2 extension).
+      this.logger.log(
+        `[DEV] OTP for ${identifier}: ${code} (SMS delivery not configured)`,
+      );
+    }
+  }
+
+  /**
+   * Registration path: skips the abuse checks (fresh account) but primes the
+   * resend cooldown so an immediate "Resend code" tap still waits 60s.
+   */
+  private async sendSignupVerificationOtp(email: string): Promise<void> {
+    await this.redis.client.set(
+      `otp:cooldown:verify:${email}`,
+      '1',
+      'EX',
+      OTP_RESEND_COOLDOWN_SEC,
+    );
+    await this.createAndDeliverOtp(email, 'verify');
+  }
+
+  private assertMinimumAge(dateOfBirth: string): void {
+    const dob = new Date(dateOfBirth);
+    const now = new Date();
+    if (Number.isNaN(dob.getTime()) || dob > now) {
+      throw new BadRequestException({
+        code: 'INVALID_DOB',
+        message: 'Date of birth must be a valid date in the past.',
+      });
+    }
+
+    let age = now.getFullYear() - dob.getFullYear();
+    const monthDiff = now.getMonth() - dob.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < dob.getDate())) {
+      age -= 1;
+    }
+    if (age < MIN_AGE_YEARS) {
+      throw new BadRequestException({
+        code: 'AGE_RESTRICTION',
+        message: `You must be at least ${MIN_AGE_YEARS} years old to create an account.`,
+      });
+    }
+  }
+
+  private duplicateUserError(
+    field: 'email' | 'username' | 'phone',
+  ): ConflictException {
+    const byField = {
+      email: {
+        code: 'EMAIL_EXISTS',
+        message: 'An account with this email already exists.',
+      },
+      username: {
+        code: 'USERNAME_TAKEN',
+        message: 'This username is already taken.',
+      },
+      phone: {
+        code: 'PHONE_EXISTS',
+        message: 'An account with this phone number already exists.',
+      },
+    } as const;
+    return new ConflictException(byField[field]);
   }
 
   private getDummyHash(): Promise<string> {

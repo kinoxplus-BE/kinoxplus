@@ -1,8 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsString,
   Length,
-  Matches,
   MaxLength,
   MinLength,
   ValidateIf,
@@ -13,6 +13,9 @@ export class ResetPasswordDto {
     example: 'john@example.com',
     description: 'Email used to request the reset OTP',
   })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.toLowerCase().trim() : value,
+  )
   @IsString()
   @MinLength(3)
   identifier!: string;
@@ -37,13 +40,14 @@ export class ResetPasswordDto {
   @Length(64, 64)
   resetToken?: string;
 
-  @ApiProperty({ example: 'NewSecureP@ss1', minLength: 8, maxLength: 72 })
+  @ApiProperty({
+    example: 'correct horse battery',
+    minLength: 8,
+    maxLength: 72,
+    description: 'At least 8 characters. No composition rules (NIST 800-63B).',
+  })
   @IsString()
   @MinLength(8)
   @MaxLength(72)
-  @Matches(/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, {
-    message:
-      'Password must contain at least one uppercase letter, one lowercase letter, and one number',
-  })
   newPassword!: string;
 }
