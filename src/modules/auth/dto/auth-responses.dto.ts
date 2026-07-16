@@ -84,6 +84,25 @@ export class OtpVerifiedDto {
   verified!: boolean;
 }
 
+/** verifyOtp result for purpose "signup" (pre-registration). */
+export class SignupTokenDto {
+  @ApiProperty({ example: true })
+  verified!: boolean;
+
+  @ApiProperty({
+    description:
+      'Single-use token to include in POST /auth/register as signupToken. Complete the profile step within its validity window.',
+    example: '3f1c8a2d5e9b0f47c6a1d8e3b5f2a9c04d7e1b8f5a2c9e6b3d0f7a4c1e8b5d2a',
+  })
+  signupToken!: string;
+
+  @ApiProperty({
+    description: 'Signup token validity in seconds',
+    example: 1800,
+  })
+  expiresIn!: number;
+}
+
 /** verifyOtp result for purpose "reset". */
 export class ResetTokenDto {
   @ApiProperty({ example: true })

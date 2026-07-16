@@ -2,7 +2,9 @@ import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsIn, IsString, Length, MinLength } from 'class-validator';
 
-const OTP_PURPOSES = ['login', 'verify', 'reset'] as const;
+// signup: pre-registration email verification (no account yet) — issues a
+// signupToken consumed by POST /auth/register.
+const OTP_PURPOSES = ['signup', 'login', 'verify', 'reset'] as const;
 export type OtpPurpose = (typeof OTP_PURPOSES)[number];
 
 const lowercaseTrim = ({ value }: { value: unknown }) =>

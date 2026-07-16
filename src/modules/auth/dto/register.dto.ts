@@ -9,6 +9,7 @@ import {
   IsIn,
   IsOptional,
   IsString,
+  Length,
   Matches,
   MaxLength,
   MinLength,
@@ -69,6 +70,17 @@ export class RegisterDto {
   @ArrayUnique()
   @IsIn(GENRES, { each: true })
   preferredGenres!: GenreName[];
+
+  // ── Email verification proof (between steps 2 and 3) ──
+
+  @ApiProperty({
+    example: '3f1c8a2d5e9b0f47c6a1d8e3b5f2a9c04d7e1b8f5a2c9e6b3d0f7a4c1e8b5d2a',
+    description:
+      'Single-use token from POST /auth/otp/verify with purpose "signup" — proves this email was verified during the wizard. Valid 30 minutes.',
+  })
+  @IsString()
+  @Length(64, 64)
+  signupToken!: string;
 
   // ── Step 3 · Profile ──
 

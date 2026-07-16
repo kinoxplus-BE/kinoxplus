@@ -9,7 +9,7 @@ export type MailJobData =
       kind: 'otp';
       to: string;
       code: string;
-      purpose: 'verify' | 'reset' | 'login';
+      purpose: 'signup' | 'verify' | 'reset' | 'login';
     }
   | { kind: 'password-changed'; to: string };
 
@@ -38,7 +38,7 @@ export class MailQueue {
   async queueOtp(
     to: string,
     code: string,
-    purpose: 'verify' | 'reset' | 'login',
+    purpose: 'signup' | 'verify' | 'reset' | 'login',
   ): Promise<void> {
     await this.add({ kind: 'otp', to, code, purpose });
   }

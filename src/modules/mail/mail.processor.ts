@@ -22,6 +22,9 @@ export class MailProcessor extends WorkerHost {
         break;
       case 'otp':
         switch (data.purpose) {
+          // Pre-registration and post-registration verification share the
+          // same "verify your email" template.
+          case 'signup':
           case 'verify':
             await this.mail.sendVerificationOtp(data.to, data.code);
             break;

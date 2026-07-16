@@ -33,9 +33,12 @@ const OTP_MAX_ATTEMPTS = 3;
 const OTP_RESEND_COOLDOWN_SEC = 60; // per identifier+purpose
 const OTP_DAILY_CAP = 10; // per identifier, all purposes combined
 const RESET_TOKEN_TTL_MS = 15 * 60 * 1000; // 15 minutes
-// Server-side purpose for the single-use token issued by verifyOtp(reset).
-// Never accepted from clients (DTO whitelist is login|verify|reset).
+// Server-side purposes for single-use tokens issued by verifyOtp. Never
+// accepted from clients (the DTO whitelists signup|login|verify|reset).
 const RESET_TOKEN_PURPOSE = 'reset_token';
+const SIGNUP_TOKEN_PURPOSE = 'signup_token';
+// Window to finish the profile step (username/color/bio) after verifying.
+const SIGNUP_TOKEN_TTL_MS = 30 * 60 * 1000;
 const MIN_AGE_YEARS = 13;
 
 // Returned by register/login/verifyOtp(login) — what the app needs to render.
@@ -80,6 +83,27 @@ export class AuthService {
   async register(dto: RegisterDto) {
     this.assertMinimumAge(dto.dateOfBirth);
 
+    // The wizard verified this email BEFORE the profile step: consume the
+    // single-use token issued by verifyOtp(signup). Atomic consume — a
+    // token can create exactly one account.
+    const consumed = await this.prisma.otpChallenge.updateMany({
+      where: {
+        identifier: dto.email,
+        purpose: SIGNUP_TOKEN_PURPOSE,
+        codeHash: this.hashToken(dto.signupToken),
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      data: { consumedAt: new Date() },
+    });
+    if (consumed.count === 0) {
+      throw new BadRequestException({
+        code: 'SIGNUP_TOKEN_INVALID',
+        message:
+          'Email verification is missing or expired. Verify your email again.',
+      });
+    }
+
     const clash = await this.prisma.user.findFirst({
       where: {
         OR: [
@@ -110,6 +134,8 @@ export class AuthService {
           preferredGenres: dto.preferredGenres,
           avatarColor: dto.avatarColor,
           bio: dto.bio,
+          // Proven by the consumed signup token.
+          emailVerified: true,
         },
         select: SESSION_USER_SELECT,
       })
@@ -129,12 +155,12 @@ export class AuthService {
     const tokens = await this.issueTokens(user.id, user.role);
 
     if (user.email) {
-      // Land the user on the "Check your email" screen with the code already
-      // sent. Fire-and-forget: "Resend code" covers delivery hiccups. The
-      // welcome email goes out later, once verification succeeds.
-      this.sendSignupVerificationOtp(user.email).catch((err) =>
-        this.logger.error('Failed to send signup verification OTP', err),
-      );
+      // Email is already verified at this point — straight to the welcome.
+      this.mailQueue
+        .queueWelcome(user.email, user.displayName)
+        .catch((err) =>
+          this.logger.error('Failed to queue welcome email', err),
+        );
     }
 
     return { user, ...tokens };
@@ -249,18 +275,33 @@ export class AuthService {
   async requestOtp(dto: RequestOtpDto) {
     await this.enforceOtpRateLimits(dto.identifier, dto.purpose);
 
-    // Same response whether or not an account exists, so this endpoint can't
-    // be used to enumerate accounts or send mail to arbitrary strangers.
-    const genericResponse = {
-      message: `If an account exists for ${dto.identifier}, a code has been sent.`,
-      expiresIn: OTP_TTL_MS / 1000,
-    };
-
     const isEmail = dto.identifier.includes('@');
     const user = await this.prisma.user.findFirst({
       where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
       select: { id: true },
     });
+
+    // signup: pre-registration verification — the identifier must NOT have
+    // an account yet. Disclosing existence here is fine: register discloses
+    // the same fact via EMAIL_EXISTS, and it saves the user from finishing
+    // the wizard only to fail at the end.
+    if (dto.purpose === 'signup') {
+      if (user) {
+        throw this.duplicateUserError(isEmail ? 'email' : 'phone');
+      }
+      await this.createAndDeliverOtp(dto.identifier, dto.purpose);
+      return {
+        message: `Verification code sent to ${dto.identifier}.`,
+        expiresIn: OTP_TTL_MS / 1000,
+      };
+    }
+
+    // login/verify/reset: same response whether or not an account exists, so
+    // the endpoint can't be used to enumerate accounts or spam strangers.
+    const genericResponse = {
+      message: `If an account exists for ${dto.identifier}, a code has been sent.`,
+      expiresIn: OTP_TTL_MS / 1000,
+    };
     if (!user) return genericResponse;
 
     await this.createAndDeliverOtp(dto.identifier, dto.purpose);
@@ -272,6 +313,25 @@ export class AuthService {
     await this.verifyAndConsumeChallenge(dto.identifier, dto.purpose, dto.code);
 
     // Handle purpose-specific side effects.
+    if (dto.purpose === 'signup') {
+      // Email proven before the account exists: issue a single-use token the
+      // wizard carries through the profile step into POST /auth/register.
+      const signupToken = randomBytes(32).toString('hex');
+      await this.prisma.otpChallenge.create({
+        data: {
+          identifier: dto.identifier,
+          codeHash: this.hashToken(signupToken),
+          purpose: SIGNUP_TOKEN_PURPOSE,
+          expiresAt: new Date(Date.now() + SIGNUP_TOKEN_TTL_MS),
+        },
+      });
+      return {
+        verified: true,
+        signupToken,
+        expiresIn: SIGNUP_TOKEN_TTL_MS / 1000,
+      };
+    }
+
     if (dto.purpose === 'verify') {
       const isEmail = dto.identifier.includes('@');
       const user = await this.prisma.user.findFirst({
@@ -636,20 +696,6 @@ export class AuthService {
         `[DEV] OTP for ${identifier}: ${code} (SMS delivery not configured)`,
       );
     }
-  }
-
-  /**
-   * Registration path: skips the abuse checks (fresh account) but primes the
-   * resend cooldown so an immediate "Resend code" tap still waits 60s.
-   */
-  private async sendSignupVerificationOtp(email: string): Promise<void> {
-    await this.redis.client.set(
-      `otp:cooldown:verify:${email}`,
-      '1',
-      'EX',
-      OTP_RESEND_COOLDOWN_SEC,
-    );
-    await this.createAndDeliverOtp(email, 'verify');
   }
 
   private assertMinimumAge(dateOfBirth: string): void {

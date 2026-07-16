@@ -26,6 +26,7 @@ import {
   OtpVerifiedDto,
   PasswordChangedDto,
   ResetTokenDto,
+  SignupTokenDto,
   TokenPairDto,
   UsernameAvailabilityDto,
 } from './dto/auth-responses.dto';
@@ -49,7 +50,7 @@ export class AuthController {
   @ApiOperation({
     summary: 'Register a new account (signup wizard submit)',
     description:
-      'One-shot submit for the 3-step signup wizard: personal details (fullName, email, password, dateOfBirth — 13+), categories (preferredGenres, min 3), profile (username, avatarColor, bio). Creates the account, returns tokens, and auto-sends the email verification OTP — land the user on the "Check your email" screen and call POST /auth/otp/verify with purpose "verify". Duplicate errors are field-specific: EMAIL_EXISTS, USERNAME_TAKEN, PHONE_EXISTS.',
+      'Final wizard submit ("Create Account" on step 3). Wizard choreography: step 1 collects fullName/email/password/dateOfBirth (13+); after step 2 (preferredGenres, min 3) call POST /auth/otp/request with purpose "signup" and verify the emailed code via POST /auth/otp/verify to receive a signupToken; step 3 collects username/avatarColor/bio; then submit everything here WITH the signupToken. Creates the account with emailVerified=true, returns tokens (go straight to dashboard), sends the welcome email. Errors: SIGNUP_TOKEN_INVALID (verify again), EMAIL_EXISTS, USERNAME_TAKEN, PHONE_EXISTS.',
   })
   @ApiEnvelope(AuthSessionDto, {
     status: 201,
@@ -61,7 +62,8 @@ export class AuthController {
   })
   @ApiResponse({
     status: 400,
-    description: 'Validation failed, INVALID_DOB, or AGE_RESTRICTION',
+    description:
+      'Validation failed, INVALID_DOB, AGE_RESTRICTION, or SIGNUP_TOKEN_INVALID',
   })
   @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
   register(@Body() dto: RegisterDto) {
@@ -150,9 +152,13 @@ export class AuthController {
   @ApiOperation({
     summary: 'Request an OTP code',
     description:
-      'Sends a 6-digit OTP to the given email or phone number if an account exists (the response is identical either way, so accounts cannot be enumerated). Purpose can be: login (passwordless), verify (email/phone verification), or reset (password reset). Code expires in 10 minutes. Per identifier: 60s resend cooldown and a daily cap.',
+      'Sends a 6-digit OTP (10-min expiry) to the given email or phone. Purposes: signup (pre-registration email verification — fire after wizard step 2; requires the email to NOT have an account, 409 EMAIL_EXISTS otherwise), login (passwordless), verify (post-registration email/phone verification), reset (password reset). For login/verify/reset the response is identical whether or not an account exists. Per identifier: 60s resend cooldown ("Resend code" hits this same endpoint) and a daily cap.',
   })
-  @ApiEnvelope(OtpRequestedDto, { description: 'Generic acknowledgement' })
+  @ApiEnvelope(OtpRequestedDto, { description: 'Code sent (or generic ack)' })
+  @ApiResponse({
+    status: 409,
+    description: 'purpose=signup only: EMAIL_EXISTS / PHONE_EXISTS',
+  })
   @ApiResponse({
     status: 429,
     description: 'Too many requests (per-IP 5/min, per-identifier cooldown)',
@@ -168,12 +174,15 @@ export class AuthController {
   @ApiOperation({
     summary: 'Verify an OTP code',
     description:
-      'Verifies the OTP code. Side effects depend on purpose: "verify" marks email/phone as verified, "login" returns tokens, "reset" returns a single-use resetToken (valid 15 min) to pass to POST /auth/reset-password.',
+      'Verifies the OTP code. Side effects depend on purpose: "signup" returns a single-use signupToken (valid 30 min) to include in POST /auth/register, "verify" marks email/phone as verified, "login" returns tokens, "reset" returns a single-use resetToken (valid 15 min) for POST /auth/reset-password.',
   })
-  @ApiEnvelope([OtpVerifiedDto, AuthSessionDto, ResetTokenDto], {
-    description:
-      'OTP verified. Payload varies by purpose: verify → OtpVerifiedDto, login → AuthSessionDto (user + tokens), reset → ResetTokenDto (single-use resetToken).',
-  })
+  @ApiEnvelope(
+    [SignupTokenDto, OtpVerifiedDto, AuthSessionDto, ResetTokenDto],
+    {
+      description:
+        'OTP verified. Payload varies by purpose: signup → SignupTokenDto, verify → OtpVerifiedDto, login → AuthSessionDto (user + tokens), reset → ResetTokenDto.',
+    },
+  )
   @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
   @ApiResponse({ status: 403, description: 'Max attempts exceeded' })
   verifyOtp(@Body() dto: VerifyOtpDto) {
