@@ -11,7 +11,8 @@ export type MailJobData =
       code: string;
       purpose: 'signup' | 'verify' | 'reset' | 'login';
     }
-  | { kind: 'password-changed'; to: string };
+  | { kind: 'password-changed'; to: string }
+  | { kind: 'all-sessions-revoked'; to: string };
 
 /**
  * Producer for the emails queue. Auth flows enqueue here instead of calling
@@ -45,6 +46,10 @@ export class MailQueue {
 
   async queuePasswordChanged(to: string): Promise<void> {
     await this.add({ kind: 'password-changed', to });
+  }
+
+  async queueAllSessionsRevoked(to: string): Promise<void> {
+    await this.add({ kind: 'all-sessions-revoked', to });
   }
 
   private async add(data: MailJobData): Promise<void> {

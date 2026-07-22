@@ -33,7 +33,7 @@ import {
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { CheckUsernameDto } from './dto/check-username.dto';
 import { LoginDto } from './dto/login.dto';
-import { RequestOtpDto, VerifyOtpDto } from './dto/otp.dto';
+import { RequestOtpDto, VerifyEmailDto, VerifyOtpDto } from './dto/otp.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -71,6 +71,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
   @Get('username-available')
   @ApiOperation({
     summary: 'Check username availability',
@@ -78,6 +79,7 @@ export class AuthController {
       'Case-insensitive availability check for signup step 3 — call before submitting so "taken" is caught in the wizard, not after.',
   })
   @ApiEnvelope(UsernameAvailabilityDto, { description: 'Availability result' })
+  @ApiResponse({ status: 429, description: 'Too many requests (20/min)' })
   usernameAvailable(@Query() dto: CheckUsernameDto) {
     return this.auth.usernameAvailable(dto.username);
   }
@@ -87,9 +89,9 @@ export class AuthController {
   @HttpCode(200)
   @Post('login')
   @ApiOperation({
-    summary: 'Login with email + password',
+    summary: 'Login with email/phone + password',
     description:
-      'Authenticates with email and password. Returns access and refresh tokens.',
+      'Authenticates with an identifier (email OR E.164 phone number) plus password. Returns access and refresh tokens.',
   })
   @ApiEnvelope(AuthSessionDto, {
     description: 'Login successful, tokens returned',
@@ -172,21 +174,33 @@ export class AuthController {
   @HttpCode(200)
   @Post('otp/verify')
   @ApiOperation({
-    summary: 'Verify an OTP code',
+    summary: 'Verify an OTP code (public purposes)',
     description:
-      'Verifies the OTP code. Side effects depend on purpose: "signup" returns a single-use signupToken (valid 30 min) to include in POST /auth/register, "verify" marks email/phone as verified, "login" returns tokens, "reset" returns a single-use resetToken (valid 15 min) for POST /auth/reset-password.',
+      'Verifies the OTP code for the public purposes: "signup" returns a single-use signupToken (valid 30 min) for POST /auth/register, "login" returns tokens, "reset" returns a single-use resetToken (valid 15 min) for POST /auth/reset-password. For post-registration email verification use POST /auth/verify-email (bearer required).',
   })
-  @ApiEnvelope(
-    [SignupTokenDto, OtpVerifiedDto, AuthSessionDto, ResetTokenDto],
-    {
-      description:
-        'OTP verified. Payload varies by purpose: signup → SignupTokenDto, verify → OtpVerifiedDto, login → AuthSessionDto (user + tokens), reset → ResetTokenDto.',
-    },
-  )
+  @ApiEnvelope([SignupTokenDto, AuthSessionDto, ResetTokenDto], {
+    description:
+      'OTP verified. Payload varies by purpose: signup → SignupTokenDto, login → AuthSessionDto (user + tokens), reset → ResetTokenDto.',
+  })
   @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
   @ApiResponse({ status: 403, description: 'Max attempts exceeded' })
   verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.auth.verifyOtp(dto);
+  }
+
+  @HttpCode(200)
+  @Post('verify-email')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: "Verify the authenticated user's email",
+    description:
+      'Post-registration email verification. Requires the caller to be signed in — the identifier being verified is taken from the JWT, not the request body, so a leaked OTP can\'t be used to verify someone else\'s account. First request the code via POST /auth/otp/request with purpose "verify". First successful call also sends the welcome email.',
+  })
+  @ApiEnvelope(OtpVerifiedDto, { description: 'Email verified' })
+  @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
+  @ApiResponse({ status: 403, description: 'Max attempts exceeded' })
+  verifyEmail(@CurrentUser() user: AuthUser, @Body() dto: VerifyEmailDto) {
+    return this.auth.verifyEmail(user.id, dto);
   }
 
   // ────────────────────── Password ──────────────────────

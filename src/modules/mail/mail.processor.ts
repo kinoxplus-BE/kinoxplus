@@ -39,6 +39,9 @@ export class MailProcessor extends WorkerHost {
       case 'password-changed':
         await this.mail.sendPasswordChanged(data.to);
         break;
+      case 'all-sessions-revoked':
+        await this.mail.sendAllSessionsRevoked(data.to);
+        break;
       default:
         this.logger.warn(`Unknown mail job: ${job.name}`);
     }

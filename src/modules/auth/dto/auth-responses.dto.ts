@@ -28,7 +28,20 @@ export class AuthUserDto {
   @ApiProperty({ example: 'Ada Lovelace', description: 'Full name' })
   displayName!: string;
 
-  @ApiProperty({ example: '#3652D9', nullable: true, type: String })
+  @ApiProperty({
+    example: 'https://res.cloudinary.com/kinoxplus/…/avatar.jpg',
+    nullable: true,
+    type: String,
+    description: 'Cloudinary URL; null until the user uploads an avatar.',
+  })
+  avatarUrl!: string | null;
+
+  @ApiProperty({
+    example: '#3652D9',
+    nullable: true,
+    type: String,
+    description: 'Swatch color used as placeholder while avatarUrl is null.',
+  })
   avatarColor!: string | null;
 
   @ApiProperty({

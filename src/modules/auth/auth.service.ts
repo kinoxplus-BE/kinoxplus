@@ -23,7 +23,12 @@ import { RedisService } from '../../redis/redis.service';
 import { MailQueue } from '../mail/mail.queue';
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { LoginDto } from './dto/login.dto';
-import type { OtpPurpose, RequestOtpDto, VerifyOtpDto } from './dto/otp.dto';
+import type {
+  OtpPurpose,
+  RequestOtpDto,
+  VerifyEmailDto,
+  VerifyOtpDto,
+} from './dto/otp.dto';
 import type { RefreshDto } from './dto/refresh.dto';
 import type { RegisterDto } from './dto/register.dto';
 import type { ResetPasswordDto } from './dto/reset-password.dto';
@@ -42,12 +47,15 @@ const SIGNUP_TOKEN_TTL_MS = 30 * 60 * 1000;
 const MIN_AGE_YEARS = 13;
 
 // Returned by register/login/verifyOtp(login) — what the app needs to render.
+// avatarUrl is a Cloudinary URL populated after upload; until then, avatarColor
+// is the swatch shown in the UI.
 const SESSION_USER_SELECT = {
   id: true,
   role: true,
   email: true,
   username: true,
   displayName: true,
+  avatarUrl: true,
   avatarColor: true,
   emailVerified: true,
 } as const;
@@ -178,8 +186,10 @@ export class AuthService {
   // ────────────────────── Login ──────────────────────
 
   async login(dto: LoginDto) {
+    // identifier is either an email (has "@") or E.164 phone (starts with "+").
+    const isEmail = dto.identifier.includes('@');
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
       select: { ...SESSION_USER_SELECT, passwordHash: true },
     });
     if (!user || !user.passwordHash) {
@@ -263,18 +273,33 @@ export class AuthService {
   }
 
   async logoutAll(userId: string) {
-    await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+    const [_, user] = await Promise.all([
+      this.prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      }),
+    ]);
+
+    if (user?.email) {
+      // Security-notice: "someone kicked you off all your devices" is a
+      // real user wants to hear about it, same as password change/reset.
+      this.mailQueue
+        .queueAllSessionsRevoked(user.email)
+        .catch((err) =>
+          this.logger.error('Failed to queue all-sessions-revoked email', err),
+        );
+    }
+
     return { message: 'All sessions revoked.' };
   }
 
   // ────────────────────── OTP ──────────────────────
 
   async requestOtp(dto: RequestOtpDto) {
-    await this.enforceOtpRateLimits(dto.identifier, dto.purpose);
-
     const isEmail = dto.identifier.includes('@');
     const user = await this.prisma.user.findFirst({
       where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
@@ -282,13 +307,15 @@ export class AuthService {
     });
 
     // signup: pre-registration verification — the identifier must NOT have
-    // an account yet. Disclosing existence here is fine: register discloses
-    // the same fact via EMAIL_EXISTS, and it saves the user from finishing
-    // the wizard only to fail at the end.
+    // an account yet. Fail-fast BEFORE the rate-limit counters increment so
+    // an honest typo (or someone else registering that email first) doesn't
+    // burn the identifier's daily OTP quota. The per-IP throttler still
+    // caps enumeration attempts.
     if (dto.purpose === 'signup') {
       if (user) {
         throw this.duplicateUserError(isEmail ? 'email' : 'phone');
       }
+      await this.enforceOtpRateLimits(dto.identifier, dto.purpose);
       await this.createAndDeliverOtp(dto.identifier, dto.purpose);
       return {
         message: `Verification code sent to ${dto.identifier}.`,
@@ -298,6 +325,9 @@ export class AuthService {
 
     // login/verify/reset: same response whether or not an account exists, so
     // the endpoint can't be used to enumerate accounts or spam strangers.
+    // Rate limits must run before the existence check to keep the response
+    // shape uniform for hits and misses.
+    await this.enforceOtpRateLimits(dto.identifier, dto.purpose);
     const genericResponse = {
       message: `If an account exists for ${dto.identifier}, a code has been sent.`,
       expiresIn: OTP_TTL_MS / 1000,
@@ -330,34 +360,6 @@ export class AuthService {
         signupToken,
         expiresIn: SIGNUP_TOKEN_TTL_MS / 1000,
       };
-    }
-
-    if (dto.purpose === 'verify') {
-      const isEmail = dto.identifier.includes('@');
-      const user = await this.prisma.user.findFirst({
-        where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
-        select: {
-          id: true,
-          email: true,
-          displayName: true,
-          emailVerified: true,
-        },
-      });
-      if (user) {
-        await this.prisma.user.update({
-          where: { id: user.id },
-          data: isEmail ? { emailVerified: true } : { phoneVerified: true },
-        });
-        // Welcome email once the address is proven real (first verify only).
-        if (isEmail && user.email && !user.emailVerified) {
-          this.mailQueue
-            .queueWelcome(user.email, user.displayName)
-            .catch((err) =>
-              this.logger.error('Failed to queue welcome email', err),
-            );
-        }
-      }
-      return { verified: true };
     }
 
     if (dto.purpose === 'login') {
@@ -394,6 +396,49 @@ export class AuthService {
       resetToken,
       expiresIn: RESET_TOKEN_TTL_MS / 1000,
     };
+  }
+
+  // ────────────────────── Email verification (authenticated) ──────────────────────
+
+  /**
+   * Post-registration email verification. Consumes an OTP requested with
+   * purpose "verify" and flips `emailVerified=true` on the authenticated
+   * user's account only — protects against a leaked OTP being used to
+   * verify someone else's identifier.
+   */
+  async verifyEmail(userId: string, dto: VerifyEmailDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        emailVerified: true,
+      },
+    });
+    if (!user || !user.email) {
+      throw new BadRequestException({
+        code: 'NO_EMAIL',
+        message: 'This account has no email address to verify.',
+      });
+    }
+
+    await this.verifyAndConsumeChallenge(user.email, 'verify', dto.code);
+
+    if (!user.emailVerified) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { emailVerified: true },
+      });
+      // First-time verification: send the welcome email.
+      this.mailQueue
+        .queueWelcome(user.email, user.displayName)
+        .catch((err) =>
+          this.logger.error('Failed to queue welcome email', err),
+        );
+    }
+
+    return { verified: true };
   }
 
   // ────────────────────── Password management ──────────────────────

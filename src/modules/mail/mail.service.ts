@@ -98,6 +98,14 @@ export class MailService {
     });
   }
 
+  async sendAllSessionsRevoked(to: string): Promise<void> {
+    await this.send({
+      to,
+      subject: `All ${this.appName} sessions were signed out`,
+      html: this.allSessionsRevokedTemplate(),
+    });
+  }
+
   private baseLayout(content: string): string {
     return `
 <!DOCTYPE html>
@@ -115,7 +123,7 @@ export class MailService {
           <tr>
             <td style="background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);padding:32px 40px;text-align:center;">
               <h1 style="margin:0;color:#ffffff;font-size:28px;font-weight:700;letter-spacing:-0.5px;">${this.appName}</h1>
-              <p style="margin:4px 0 0;color:rgba(255,255,255,0.8);font-size:14px;">Watch together, in perfect sync</p>
+              <p style="margin:4px 0 0;color:rgba(255,255,255,0.8);font-size:14px;">Watch together, feel together</p>
             </td>
           </tr>
           <!-- Body -->
@@ -217,6 +225,18 @@ export class MailService {
       </p>
       <p style="margin:0;color:#ef4444;font-size:14px;font-weight:500;">
         If this wasn't you, reset your password immediately and contact support &mdash; someone may have access to your account.
+      </p>
+    `);
+  }
+
+  private allSessionsRevokedTemplate(): string {
+    return this.baseLayout(`
+      <h2 style="margin:0 0 16px;color:#111827;font-size:22px;font-weight:600;">All sessions were signed out</h2>
+      <p style="margin:0 0 24px;color:#4b5563;font-size:16px;line-height:1.6;">
+        You just signed out of ${this.appName} on every device. You'll need to log in again next time you open the app.
+      </p>
+      <p style="margin:0;color:#ef4444;font-size:14px;font-weight:500;">
+        If this wasn't you, reset your password immediately &mdash; someone may have had access to your account.
       </p>
     `);
   }
