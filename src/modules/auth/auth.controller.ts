@@ -29,6 +29,9 @@ import {
   ResetTokenDto,
   SignupTokenDto,
   TokenPairDto,
+  TwoFactorEnabledDto,
+  TwoFactorRequiredDto,
+  TwoFactorSetupDto,
   UsernameAvailabilityDto,
 } from './dto/auth-responses.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
@@ -38,12 +41,21 @@ import { RequestOtpDto, VerifyEmailDto, VerifyOtpDto } from './dto/otp.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import {
+  DisableTwoFactorDto,
+  EnableTwoFactorDto,
+  TwoFactorChallengeDto,
+} from './dto/two-factor.dto';
+import { TwoFactorService } from './two-factor.service';
 
 @ApiTags('Auth')
 @UseGuards(ThrottlerGuard)
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly twoFactor: TwoFactorService,
+  ) {}
 
   @Public()
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
@@ -94,8 +106,9 @@ export class AuthController {
     description:
       'Authenticates with an identifier (email OR E.164 phone number) plus password. Returns access and refresh tokens.',
   })
-  @ApiEnvelope(AuthSessionDto, {
-    description: 'Login successful, tokens returned',
+  @ApiEnvelope([AuthSessionDto, TwoFactorRequiredDto], {
+    description:
+      'Either a full session (tokens + user) or, if 2FA is enabled on the account, a challenge to redeem at POST /auth/2fa/challenge. Discriminate via `requiresTwoFactor` in the payload.',
   })
   @ApiResponse({ status: 401, description: 'Invalid email or password' })
   @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
@@ -179,10 +192,13 @@ export class AuthController {
     description:
       'Verifies the OTP code for the public purposes: "signup" returns a single-use signupToken (valid 30 min) for POST /auth/register, "login" returns tokens, "reset" returns a single-use resetToken (valid 15 min) for POST /auth/reset-password. For post-registration email verification use POST /auth/verify-email (bearer required).',
   })
-  @ApiEnvelope([SignupTokenDto, AuthSessionDto, ResetTokenDto], {
-    description:
-      'OTP verified. Payload varies by purpose: signup → SignupTokenDto, login → AuthSessionDto (user + tokens), reset → ResetTokenDto.',
-  })
+  @ApiEnvelope(
+    [SignupTokenDto, AuthSessionDto, TwoFactorRequiredDto, ResetTokenDto],
+    {
+      description:
+        'OTP verified. Payload varies by purpose: signup → SignupTokenDto, login → AuthSessionDto (or TwoFactorRequiredDto if 2FA is on), reset → ResetTokenDto.',
+    },
+  )
   @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
   @ApiResponse({ status: 403, description: 'Max attempts exceeded' })
   verifyOtp(@Body() dto: VerifyOtpDto, @Ip() ip: string) {
@@ -241,5 +257,87 @@ export class AuthController {
   })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.auth.resetPassword(dto);
+  }
+
+  // ────────────────────── Two-factor authentication ──────────────────────
+
+  @HttpCode(200)
+  @Post('2fa/setup')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Start 2FA enrollment (generate QR + secret)',
+    description:
+      'Generates a fresh TOTP secret, returns the otpauth:// URL and a PNG data URL of the QR code. Nothing is enabled yet — the user scans the QR into their authenticator app, then confirms via POST /auth/2fa/enable.',
+  })
+  @ApiEnvelope(TwoFactorSetupDto, { description: 'Setup data returned' })
+  @ApiResponse({ status: 400, description: 'TWO_FACTOR_ALREADY_ENABLED' })
+  setupTwoFactor(@CurrentUser() user: AuthUser) {
+    return this.twoFactor.setup(user.id);
+  }
+
+  @HttpCode(200)
+  @Post('2fa/enable')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Confirm 2FA enrollment (verify first code)',
+    description:
+      'Verifies the first 6-digit TOTP code against the secret from /setup, flips twoFactorEnabled = true, and returns 10 one-time backup codes. The backup codes are shown ONCE — force the user to save them.',
+  })
+  @ApiEnvelope(TwoFactorEnabledDto, { description: '2FA enabled' })
+  @ApiResponse({
+    status: 400,
+    description: 'TWO_FACTOR_NOT_INITIALIZED | TWO_FACTOR_INVALID_CODE',
+  })
+  async enableTwoFactor(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: EnableTwoFactorDto,
+  ) {
+    const { backupCodes } = await this.twoFactor.enable(user.id, dto.code);
+    return {
+      message: 'Two-factor authentication enabled.',
+      backupCodes,
+    };
+  }
+
+  @HttpCode(200)
+  @Post('2fa/disable')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Turn 2FA off',
+    description:
+      'Requires the current password AND a valid TOTP code (or backup code). Wipes the secret + all backup codes.',
+  })
+  @ApiEnvelope(MessageResponseDto, { description: '2FA disabled' })
+  @ApiResponse({
+    status: 400,
+    description: 'TWO_FACTOR_NOT_ENABLED | TWO_FACTOR_INVALID_CODE',
+  })
+  @ApiResponse({ status: 401, description: 'INVALID_CREDENTIALS' })
+  async disableTwoFactor(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: DisableTwoFactorDto,
+  ) {
+    await this.twoFactor.disable(user.id, dto.password, dto.code);
+    return { message: 'Two-factor authentication disabled.' };
+  }
+
+  @Public()
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @HttpCode(200)
+  @Post('2fa/challenge')
+  @ApiOperation({
+    summary: 'Complete 2FA-gated login',
+    description:
+      "Redeem the `challengeToken` returned from POST /auth/login (or /auth/otp/verify) along with a TOTP code from the user's authenticator OR one of their backup codes. Successful challenge issues the same {user, accessToken, refreshToken} payload a non-2FA login would return.",
+  })
+  @ApiEnvelope(AuthSessionDto, { description: 'Login completed' })
+  @ApiResponse({
+    status: 400,
+    description: 'TWO_FACTOR_INVALID_CODE (with attempts remaining)',
+  })
+  @ApiResponse({ status: 401, description: 'TWO_FACTOR_CHALLENGE_INVALID' })
+  @ApiResponse({ status: 403, description: 'TWO_FACTOR_MAX_ATTEMPTS' })
+  twoFactorChallenge(@Body() dto: TwoFactorChallengeDto, @Ip() ip: string) {
+    return this.auth.twoFactorChallenge(dto, { ip });
   }
 }

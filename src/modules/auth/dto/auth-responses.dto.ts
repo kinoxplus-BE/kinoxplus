@@ -138,3 +138,74 @@ export class PasswordChangedDto extends TokenPairDto {
   })
   message!: string;
 }
+
+/** Returned by POST /auth/login (and other login paths) when the user has
+ * 2FA enabled — the client must now call POST /auth/2fa/challenge. */
+export class TwoFactorRequiredDto {
+  @ApiProperty({ example: true })
+  requiresTwoFactor!: true;
+
+  @ApiProperty({
+    description:
+      'Single-use token to include in POST /auth/2fa/challenge along with the TOTP or backup code.',
+    example: '3f1c8a2d5e9b0f47c6a1d8e3b5f2a9c04d7e1b8f5a2c9e6b3d0f7a4c1e8b5d2a',
+  })
+  challengeToken!: string;
+
+  @ApiProperty({
+    description: 'Challenge token validity in seconds',
+    example: 300,
+  })
+  expiresIn!: number;
+}
+
+/** Response from POST /auth/2fa/setup — the QR code the user scans into
+ * their authenticator app. Secret is returned as a fallback for apps that
+ * can't scan QR (rare). Nothing is enabled yet; call /enable to commit. */
+export class TwoFactorSetupDto {
+  @ApiProperty({
+    example: 'JBSWY3DPEHPK3PXP',
+    description:
+      "Base32 shared secret. Show this to the user only if they can't scan the QR.",
+  })
+  secret!: string;
+
+  @ApiProperty({
+    example:
+      'otpauth://totp/KinoX+:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=KinoX%2B',
+    description: 'The URI encoded in the QR code (also works as a fallback).',
+  })
+  otpauthUrl!: string;
+
+  @ApiProperty({
+    example: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA…',
+    description: 'PNG data URL — render as-is in an <img>.',
+  })
+  qrCodeDataUrl!: string;
+}
+
+/** Response from POST /auth/2fa/enable. Backup codes are shown ONCE; the
+ * client should force the user to save them (screenshot / copy / write). */
+export class TwoFactorEnabledDto {
+  @ApiProperty({ example: 'Two-factor authentication enabled.' })
+  message!: string;
+
+  @ApiProperty({
+    example: [
+      'a1b2c3d4',
+      'e5f6g7h8',
+      'i9j0k1l2',
+      'm3n4o5p6',
+      'q7r8s9t0',
+      'u1v2w3x4',
+      'y5z6a7b8',
+      'c9d0e1f2',
+      'g3h4i5j6',
+      'k7l8m9n0',
+    ],
+    description:
+      '10 single-use recovery codes. Shown only here — the server keeps only hashes.',
+    type: [String],
+  })
+  backupCodes!: string[];
+}

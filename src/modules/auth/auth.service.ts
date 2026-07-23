@@ -21,6 +21,8 @@ import type { Role } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { MailQueue } from '../mail/mail.queue';
+import { TwoFactorService } from './two-factor.service';
+import type { TwoFactorChallengeDto } from './dto/two-factor.dto';
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { DeviceInfoDto } from './dto/device-info.dto';
 import type { LoginDto } from './dto/login.dto';
@@ -45,6 +47,10 @@ const RESET_TOKEN_PURPOSE = 'reset_token';
 const SIGNUP_TOKEN_PURPOSE = 'signup_token';
 // Window to finish the profile step (username/color/bio) after verifying.
 const SIGNUP_TOKEN_TTL_MS = 30 * 60 * 1000;
+// 2FA challenge: user proved factor 1 (password/OTP/Google), now must
+// prove factor 2 within this window.
+const TWO_FACTOR_CHALLENGE_PURPOSE = 'two_factor_challenge';
+const TWO_FACTOR_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const MIN_AGE_YEARS = 13;
 
 /**
@@ -93,6 +99,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly mailQueue: MailQueue,
     private readonly redis: RedisService,
+    private readonly twoFactor: TwoFactorService,
   ) {
     this.argon2Options = {
       type: argon2.argon2id,
@@ -211,7 +218,11 @@ export class AuthService {
     const isEmail = dto.identifier.includes('@');
     const user = await this.prisma.user.findUnique({
       where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
-      select: { ...SESSION_USER_SELECT, passwordHash: true },
+      select: {
+        ...SESSION_USER_SELECT,
+        passwordHash: true,
+        twoFactorEnabled: true,
+      },
     });
     if (!user || !user.passwordHash) {
       // Burn the same argon2 cost as a real check before rejecting.
@@ -232,12 +243,15 @@ export class AuthService {
       });
     }
 
-    const tokens = await this.issueTokens(user.id, user.role, {
-      device: dto.device ?? session.device,
-      ip: session.ip,
-    });
-    const { passwordHash: _, ...safeUser } = user;
-    return { user: safeUser, ...tokens };
+    const result = await this.issueSessionOrChallenge(
+      user.id,
+      user.role,
+      user.twoFactorEnabled,
+      { device: dto.device ?? session.device, ip: session.ip },
+    );
+    if ('requiresTwoFactor' in result) return result;
+    const { passwordHash: _, twoFactorEnabled: __, ...safeUser } = user;
+    return { user: safeUser, ...result };
   }
 
   // ────────────────────── Token refresh ──────────────────────
@@ -394,7 +408,7 @@ export class AuthService {
       const isEmail = dto.identifier.includes('@');
       const user = await this.prisma.user.findFirst({
         where: isEmail ? { email: dto.identifier } : { phone: dto.identifier },
-        select: SESSION_USER_SELECT,
+        select: { ...SESSION_USER_SELECT, twoFactorEnabled: true },
       });
       if (!user) {
         throw new BadRequestException({
@@ -402,11 +416,15 @@ export class AuthService {
           message: 'No account found for this identifier.',
         });
       }
-      const tokens = await this.issueTokens(user.id, user.role, {
-        device: dto.device ?? session.device,
-        ip: session.ip,
-      });
-      return { user, ...tokens };
+      const result = await this.issueSessionOrChallenge(
+        user.id,
+        user.role,
+        user.twoFactorEnabled,
+        { device: dto.device ?? session.device, ip: session.ip },
+      );
+      if ('requiresTwoFactor' in result) return result;
+      const { twoFactorEnabled: _, ...safeUser } = user;
+      return { user: safeUser, ...result };
     }
 
     // purpose === 'reset': issue a single-use, short-lived reset token so the
@@ -594,6 +612,125 @@ export class AuthService {
     }
 
     return { message: 'Password reset successful. Please log in again.' };
+  }
+
+  // ────────────────────── Two-factor authentication ──────────────────────
+
+  /**
+   * Completes a 2FA-gated login: consumes the challenge token atomically,
+   * verifies the TOTP or backup code, then mints tokens. Called from
+   * POST /auth/2fa/challenge after /auth/login returned requiresTwoFactor.
+   */
+  async twoFactorChallenge(
+    dto: TwoFactorChallengeDto,
+    session: SessionContext = {},
+  ) {
+    // Look up the challenge before consuming so we can find the user.
+    const challenge = await this.prisma.otpChallenge.findFirst({
+      where: {
+        purpose: TWO_FACTOR_CHALLENGE_PURPOSE,
+        codeHash: this.hashToken(dto.challengeToken),
+        consumedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!challenge) {
+      throw new UnauthorizedException({
+        code: 'TWO_FACTOR_CHALLENGE_INVALID',
+        message: 'Login challenge is invalid or expired. Sign in again.',
+      });
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: challenge.identifier },
+      select: { ...SESSION_USER_SELECT, twoFactorSecret: true },
+    });
+    if (!user) {
+      throw new UnauthorizedException({
+        code: 'TWO_FACTOR_CHALLENGE_INVALID',
+        message: 'Login challenge is invalid or expired. Sign in again.',
+      });
+    }
+
+    const codeValid = await this.twoFactor.verifyCode(
+      user.id,
+      user.twoFactorSecret,
+      dto.code,
+    );
+    if (!codeValid) {
+      // Do NOT consume the challenge on a bad code — user retries with a
+      // fresh code without needing to log in again. But cap attempts via
+      // the standard challenge attempts counter.
+      const updated = await this.prisma.otpChallenge.update({
+        where: { id: challenge.id },
+        data: { attempts: { increment: 1 } },
+        select: { attempts: true },
+      });
+      if (updated.attempts >= OTP_MAX_ATTEMPTS) {
+        await this.prisma.otpChallenge.update({
+          where: { id: challenge.id },
+          data: { consumedAt: new Date() },
+        });
+        throw new ForbiddenException({
+          code: 'TWO_FACTOR_MAX_ATTEMPTS',
+          message: 'Too many failed attempts. Sign in again.',
+        });
+      }
+      throw new BadRequestException({
+        code: 'TWO_FACTOR_INVALID_CODE',
+        message: `Invalid code. ${OTP_MAX_ATTEMPTS - updated.attempts} attempts remaining.`,
+      });
+    }
+
+    // Success — burn the challenge.
+    await this.prisma.otpChallenge.update({
+      where: { id: challenge.id },
+      data: { consumedAt: new Date() },
+    });
+
+    const tokens = await this.issueTokens(user.id, user.role, {
+      device: dto.device ?? session.device,
+      ip: session.ip,
+    });
+    const { twoFactorSecret: _, ...safeUser } = user;
+    return { user: safeUser, ...tokens };
+  }
+
+  /**
+   * Central helper: after factor 1 (password / OTP / social) succeeds, this
+   * either mints tokens or — if the user has 2FA enabled — returns a
+   * challenge the client redeems on POST /auth/2fa/challenge.
+   */
+  private async issueSessionOrChallenge(
+    userId: string,
+    role: Role,
+    twoFactorEnabled: boolean,
+    session: SessionContext,
+  ): Promise<
+    | { accessToken: string; refreshToken: string }
+    | { requiresTwoFactor: true; challengeToken: string; expiresIn: number }
+  > {
+    if (!twoFactorEnabled) {
+      return this.issueTokens(userId, role, {
+        device: session.device,
+        ip: session.ip,
+      });
+    }
+    const challengeToken = randomBytes(32).toString('hex');
+    await this.prisma.otpChallenge.create({
+      data: {
+        identifier: userId,
+        codeHash: this.hashToken(challengeToken),
+        purpose: TWO_FACTOR_CHALLENGE_PURPOSE,
+        expiresAt: new Date(Date.now() + TWO_FACTOR_CHALLENGE_TTL_MS),
+      },
+    });
+    return {
+      requiresTwoFactor: true,
+      challengeToken,
+      expiresIn: TWO_FACTOR_CHALLENGE_TTL_MS / 1000,
+    };
   }
 
   // ────────────────────── Internals ──────────────────────

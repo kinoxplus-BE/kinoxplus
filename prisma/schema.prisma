@@ -33,6 +33,12 @@ model User {
   role          Role      @default(USER)
   emailVerified Boolean   @default(false)
   phoneVerified Boolean   @default(false)
+  // TOTP 2FA. `twoFactorSecret` is the base32 shared secret; it's populated
+  // during /auth/2fa/setup and committed on /auth/2fa/enable. Not encrypted
+  // at rest — that's a follow-up (KMS-derived key) if we ever ship an admin
+  // console that can dump the User table.
+  twoFactorEnabled Boolean  @default(false)
+  twoFactorSecret  String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -43,6 +49,7 @@ model User {
   memberships   RoomMember[]
   chatMessages  ChatMessage[]
   watchHistory  WatchHistory[]
+  twoFactorBackupCodes TwoFactorBackupCode[]
 
   @@index([role])
 }
@@ -89,6 +96,20 @@ model RefreshToken {
   @@index([userId, revokedAt, expiresAt])
   // Cleanup job prunes by expiry (see CleanupProcessor).
   @@index([expiresAt])
+}
+
+/// Single-use recovery codes issued alongside TOTP enrollment. Stored
+/// SHA-256-hashed so a DB leak can't be redeemed. Each code is one-shot:
+/// consumed = `usedAt` set.
+model TwoFactorBackupCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String    @unique
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 model OtpChallenge {
