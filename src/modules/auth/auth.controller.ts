@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Ip,
   Post,
   Query,
   UseGuards,
@@ -66,8 +67,8 @@ export class AuthController {
       'Validation failed, INVALID_DOB, AGE_RESTRICTION, or SIGNUP_TOKEN_INVALID',
   })
   @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
-  register(@Body() dto: RegisterDto) {
-    return this.auth.register(dto);
+  register(@Body() dto: RegisterDto, @Ip() ip: string) {
+    return this.auth.register(dto, { ip });
   }
 
   @Public()
@@ -98,8 +99,8 @@ export class AuthController {
   })
   @ApiResponse({ status: 401, description: 'Invalid email or password' })
   @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto);
+  login(@Body() dto: LoginDto, @Ip() ip: string) {
+    return this.auth.login(dto, { ip });
   }
 
   @Public()
@@ -115,8 +116,8 @@ export class AuthController {
     status: 401,
     description: 'Token invalid, expired, or reuse detected',
   })
-  refresh(@Body() dto: RefreshDto) {
-    return this.auth.refresh(dto);
+  refresh(@Body() dto: RefreshDto, @Ip() ip: string) {
+    return this.auth.refresh(dto, { ip });
   }
 
   @HttpCode(200)
@@ -184,8 +185,8 @@ export class AuthController {
   })
   @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
   @ApiResponse({ status: 403, description: 'Max attempts exceeded' })
-  verifyOtp(@Body() dto: VerifyOtpDto) {
-    return this.auth.verifyOtp(dto);
+  verifyOtp(@Body() dto: VerifyOtpDto, @Ip() ip: string) {
+    return this.auth.verifyOtp(dto, { ip });
   }
 
   @HttpCode(200)
@@ -220,8 +221,9 @@ export class AuthController {
   changePassword(
     @CurrentUser() user: AuthUser,
     @Body() dto: ChangePasswordDto,
+    @Ip() ip: string,
   ) {
-    return this.auth.changePassword(user.id, dto);
+    return this.auth.changePassword(user.id, dto, { ip });
   }
 
   @Public()

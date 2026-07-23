@@ -15,6 +15,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { GENRES, type GenreName } from '../../../common/constants/genres';
+import { DeviceInfoDto, DeviceInfoField } from './device-info.dto';
 
 const lowercaseTrim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.toLowerCase().trim() : value;
@@ -129,4 +130,7 @@ export class RegisterDto {
   @IsString()
   @Matches(/^\+[1-9]\d{6,14}$/, { message: 'Phone must be in E.164 format' })
   phone?: string;
+
+  @DeviceInfoField()
+  device?: DeviceInfoDto;
 }

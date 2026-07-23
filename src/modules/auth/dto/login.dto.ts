@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { DeviceInfoDto, DeviceInfoField } from './device-info.dto';
 
 /**
  * Accepts either an email (`@` in the string) or an E.164 phone number
@@ -31,4 +32,7 @@ export class LoginDto {
   @MinLength(8)
   @MaxLength(72)
   password!: string;
+
+  @DeviceInfoField()
+  device?: DeviceInfoDto;
 }

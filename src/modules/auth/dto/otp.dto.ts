@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsIn, IsString, Length, MinLength } from 'class-validator';
+import { DeviceInfoDto, DeviceInfoField } from './device-info.dto';
 
 // Purposes accepted by POST /auth/otp/request. All are public because a user
 // can legitimately need any of these before being signed in.
@@ -61,6 +62,11 @@ export class VerifyOtpDto {
   })
   @IsIn(VERIFY_OTP_PURPOSES)
   purpose!: VerifiableOtpPurpose;
+
+  /** Only used when purpose is "login" — attaches device metadata to the
+   * session that gets created. Ignored for signup/reset. */
+  @DeviceInfoField()
+  device?: DeviceInfoDto;
 }
 
 /** POST /auth/verify-email — bearer required. */

@@ -22,6 +22,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { MailQueue } from '../mail/mail.queue';
 import type { ChangePasswordDto } from './dto/change-password.dto';
+import type { DeviceInfoDto } from './dto/device-info.dto';
 import type { LoginDto } from './dto/login.dto';
 import type {
   OtpPurpose,
@@ -45,6 +46,23 @@ const SIGNUP_TOKEN_PURPOSE = 'signup_token';
 // Window to finish the profile step (username/color/bio) after verifying.
 const SIGNUP_TOKEN_TTL_MS = 30 * 60 * 1000;
 const MIN_AGE_YEARS = 13;
+
+/**
+ * Request-time context threaded from the controller into the service —
+ * what device is signing in and from where — so the resulting refresh
+ * token row captures the session's identity.
+ */
+export interface SessionContext {
+  device?: DeviceInfoDto;
+  ip?: string;
+}
+
+/** Internal option bag for issueTokens. */
+interface IssueTokensOptions {
+  rotateFromId?: string;
+  device?: DeviceInfoDto;
+  ip?: string;
+}
 
 // Returned by register/login/verifyOtp(login) — what the app needs to render.
 // avatarUrl is a Cloudinary URL populated after upload; until then, avatarColor
@@ -88,7 +106,7 @@ export class AuthService {
 
   // ────────────────────── Register ──────────────────────
 
-  async register(dto: RegisterDto) {
+  async register(dto: RegisterDto, session: SessionContext = {}) {
     this.assertMinimumAge(dto.dateOfBirth);
 
     // The wizard verified this email BEFORE the profile step: consume the
@@ -160,7 +178,10 @@ export class AuthService {
         throw err;
       });
 
-    const tokens = await this.issueTokens(user.id, user.role);
+    const tokens = await this.issueTokens(user.id, user.role, {
+      device: dto.device ?? session.device,
+      ip: session.ip,
+    });
 
     if (user.email) {
       // Email is already verified at this point — straight to the welcome.
@@ -185,7 +206,7 @@ export class AuthService {
 
   // ────────────────────── Login ──────────────────────
 
-  async login(dto: LoginDto) {
+  async login(dto: LoginDto, session: SessionContext = {}) {
     // identifier is either an email (has "@") or E.164 phone (starts with "+").
     const isEmail = dto.identifier.includes('@');
     const user = await this.prisma.user.findUnique({
@@ -211,14 +232,17 @@ export class AuthService {
       });
     }
 
-    const tokens = await this.issueTokens(user.id, user.role);
+    const tokens = await this.issueTokens(user.id, user.role, {
+      device: dto.device ?? session.device,
+      ip: session.ip,
+    });
     const { passwordHash: _, ...safeUser } = user;
     return { user: safeUser, ...tokens };
   }
 
   // ────────────────────── Token refresh ──────────────────────
 
-  async refresh(dto: RefreshDto) {
+  async refresh(dto: RefreshDto, session: SessionContext = {}) {
     const tokenHash = this.hashToken(dto.refreshToken);
     const stored = await this.prisma.refreshToken.findUnique({
       where: { tokenHash },
@@ -256,7 +280,11 @@ export class AuthService {
     }
 
     // Rotation (revoke old + issue new) happens atomically in issueTokens.
-    return this.issueTokens(stored.user.id, stored.user.role, stored.id);
+    // Device info is inherited from the previous token; IP is refreshed.
+    return this.issueTokens(stored.user.id, stored.user.role, {
+      rotateFromId: stored.id,
+      ip: session.ip,
+    });
   }
 
   // ────────────────────── Logout ──────────────────────
@@ -339,7 +367,7 @@ export class AuthService {
     return genericResponse;
   }
 
-  async verifyOtp(dto: VerifyOtpDto) {
+  async verifyOtp(dto: VerifyOtpDto, session: SessionContext = {}) {
     await this.verifyAndConsumeChallenge(dto.identifier, dto.purpose, dto.code);
 
     // Handle purpose-specific side effects.
@@ -374,7 +402,10 @@ export class AuthService {
           message: 'No account found for this identifier.',
         });
       }
-      const tokens = await this.issueTokens(user.id, user.role);
+      const tokens = await this.issueTokens(user.id, user.role, {
+        device: dto.device ?? session.device,
+        ip: session.ip,
+      });
       return { user, ...tokens };
     }
 
@@ -443,7 +474,11 @@ export class AuthService {
 
   // ────────────────────── Password management ──────────────────────
 
-  async changePassword(userId: string, dto: ChangePasswordDto) {
+  async changePassword(
+    userId: string,
+    dto: ChangePasswordDto,
+    session: SessionContext = {},
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { passwordHash: true, role: true, email: true },
@@ -476,7 +511,10 @@ export class AuthService {
     ]);
 
     // Fresh pair for this device, so "all other sessions revoked" is true.
-    const tokens = await this.issueTokens(userId, user.role);
+    const tokens = await this.issueTokens(userId, user.role, {
+      device: dto.device ?? session.device,
+      ip: session.ip,
+    });
 
     if (user.email) {
       this.mailQueue
@@ -564,9 +602,14 @@ export class AuthService {
    * Signs an access token and persists a hashed refresh token. When
    * `rotateFromId` is given, revoking the old token and creating the new one
    * happen in one transaction so a mid-flight failure can't strand the user
-   * with both tokens dead.
+   * with both tokens dead. On rotation, device metadata from the previous
+   * token is carried onto the new one so the "session" identity survives.
    */
-  private async issueTokens(userId: string, role: Role, rotateFromId?: string) {
+  private async issueTokens(
+    userId: string,
+    role: Role,
+    opts: IssueTokensOptions = {},
+  ) {
     const accessToken = await this.jwt.signAsync({
       sub: userId,
       role,
@@ -575,18 +618,50 @@ export class AuthService {
     const rawRefresh = randomBytes(32).toString('hex');
     const tokenHash = this.hashToken(rawRefresh);
 
+    // On rotation, inherit device metadata from the previous token unless
+    // the caller explicitly overrode it. Keeps the session's identity
+    // stable across refreshes so it stays as one row in the sessions UI.
+    let device = opts.device;
+    if (opts.rotateFromId && !device) {
+      const previous = await this.prisma.refreshToken.findUnique({
+        where: { id: opts.rotateFromId },
+        select: {
+          deviceName: true,
+          deviceModel: true,
+          platform: true,
+          osVersion: true,
+          appVersion: true,
+        },
+      });
+      if (previous) {
+        device = {
+          deviceName: previous.deviceName ?? undefined,
+          deviceModel: previous.deviceModel ?? undefined,
+          platform: previous.platform as 'ios' | 'android' | 'web' | undefined,
+          osVersion: previous.osVersion ?? undefined,
+          appVersion: previous.appVersion ?? undefined,
+        };
+      }
+    }
+
     const createNew = this.prisma.refreshToken.create({
       data: {
         userId,
         tokenHash,
+        deviceName: device?.deviceName,
+        deviceModel: device?.deviceModel,
+        platform: device?.platform,
+        osVersion: device?.osVersion,
+        appVersion: device?.appVersion,
+        lastUsedIp: opts.ip,
         expiresAt: new Date(Date.now() + this.refreshTtlSec * 1000),
       },
     });
 
-    if (rotateFromId) {
+    if (opts.rotateFromId) {
       await this.prisma.$transaction([
         this.prisma.refreshToken.update({
-          where: { id: rotateFromId },
+          where: { id: opts.rotateFromId },
           data: { revokedAt: new Date() },
         }),
         createNew,

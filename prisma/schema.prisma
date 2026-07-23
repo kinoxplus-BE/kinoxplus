@@ -69,11 +69,24 @@ model RefreshToken {
   userId    String
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   tokenHash String    @unique
+  // Device metadata: sent by the client at login/register; carried across
+  // rotation so the session identity stays stable when a token refreshes.
+  deviceName  String? // user-editable label, e.g. "Samuel's iPhone"
+  deviceModel String? // e.g. "iPhone 15 Pro"
+  platform    String? // ios | android | web
+  osVersion   String?
+  appVersion  String?
+  // Activity — updated on rotation onto the new row.
+  lastUsedAt  DateTime @default(now())
+  lastUsedIp  String?
+  // Lifecycle
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
 
   @@index([userId])
+  // Sessions list query shape: userId + revokedAt + expiresAt.
+  @@index([userId, revokedAt, expiresAt])
   // Cleanup job prunes by expiry (see CleanupProcessor).
   @@index([expiresAt])
 }

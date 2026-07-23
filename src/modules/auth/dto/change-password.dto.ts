@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, MaxLength, MinLength } from 'class-validator';
+import { DeviceInfoDto, DeviceInfoField } from './device-info.dto';
 
 export class ChangePasswordDto {
   @ApiProperty({ example: 'OldP@ss123' })
@@ -17,4 +18,9 @@ export class ChangePasswordDto {
   @MinLength(8)
   @MaxLength(72)
   newPassword!: string;
+
+  /** Tags the fresh session issued after the password change so the current
+   * device stays labelled in the sessions list. */
+  @DeviceInfoField()
+  device?: DeviceInfoDto;
 }
