@@ -65,6 +65,9 @@ export const envSchema = z.object({
   BREVO_SENDER_EMAIL: z.string().optional(),
   BREVO_SENDER_NAME: z.string().optional(),
 
+  // Google Sign-In (optional; POST /auth/google returns 400 if unset)
+  GOOGLE_CLIENT_ID: z.string().optional(),
+
   // SMS (Termii)
   TERMII_API_KEY: z.string().optional(),
   TERMII_SENDER_ID: z.string().optional(),

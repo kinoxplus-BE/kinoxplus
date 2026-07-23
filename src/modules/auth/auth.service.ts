@@ -13,6 +13,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { timingSafeEqual } from 'node:crypto';
+import { OAuth2Client, type TokenPayload } from 'google-auth-library';
 import {
   isUniqueViolation,
   uniqueViolationTarget,
@@ -25,6 +26,7 @@ import { TwoFactorService } from './two-factor.service';
 import type { TwoFactorChallengeDto } from './dto/two-factor.dto';
 import type { ChangePasswordDto } from './dto/change-password.dto';
 import type { DeviceInfoDto } from './dto/device-info.dto';
+import type { GoogleSignInDto } from './dto/google-auth.dto';
 import type { LoginDto } from './dto/login.dto';
 import type {
   OtpPurpose,
@@ -92,6 +94,9 @@ export class AuthService {
   // Verified against when login hits an unknown email, so the response takes
   // the same time as a real password check (no user-enumeration via timing).
   private dummyHash?: Promise<string>;
+  // Optional — POST /auth/google returns 400 if not configured.
+  private readonly googleClientId?: string;
+  private readonly googleOAuthClient?: OAuth2Client;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -109,6 +114,14 @@ export class AuthService {
       parallelism: 1,
     };
     this.refreshTtlSec = config.get<number>('JWT_REFRESH_TTL', 86_400); // 1 day for dev
+    this.googleClientId = config.get<string>('GOOGLE_CLIENT_ID');
+    if (this.googleClientId) {
+      this.googleOAuthClient = new OAuth2Client(this.googleClientId);
+    } else {
+      this.logger.warn(
+        'GOOGLE_CLIENT_ID not set — POST /auth/google will return 400.',
+      );
+    }
   }
 
   // ────────────────────── Register ──────────────────────
@@ -251,6 +264,84 @@ export class AuthService {
     );
     if ('requiresTwoFactor' in result) return result;
     const { passwordHash: _, twoFactorEnabled: __, ...safeUser } = user;
+    return { user: safeUser, ...result };
+  }
+
+  // ────────────────────── Google sign-in ──────────────────────
+
+  /**
+   * Verify a Google ID token, find-or-create the user, hand off to the
+   * standard session/2FA-challenge flow. Existing accounts (same email)
+   * are silently linked — no merge complexity, just log them in.
+   */
+  async googleSignIn(dto: GoogleSignInDto, session: SessionContext = {}) {
+    if (!this.googleOAuthClient || !this.googleClientId) {
+      throw new BadRequestException({
+        code: 'GOOGLE_NOT_CONFIGURED',
+        message: 'Google sign-in is not configured on this server.',
+      });
+    }
+
+    let payload: TokenPayload | undefined;
+    try {
+      const ticket = await this.googleOAuthClient.verifyIdToken({
+        idToken: dto.idToken,
+        audience: this.googleClientId,
+      });
+      payload = ticket.getPayload();
+    } catch (err) {
+      this.logger.warn('Google idToken verification failed', err);
+      throw new UnauthorizedException({
+        code: 'GOOGLE_TOKEN_INVALID',
+        message: 'Invalid Google credential.',
+      });
+    }
+
+    if (!payload || !payload.email || !payload.email_verified) {
+      throw new UnauthorizedException({
+        code: 'GOOGLE_EMAIL_UNVERIFIED',
+        message: 'Google account has no verified email.',
+      });
+    }
+
+    const email = payload.email.toLowerCase();
+    let user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { ...SESSION_USER_SELECT, twoFactorEnabled: true },
+    });
+
+    if (!user) {
+      // New Google user — auto-create with a placeholder username the
+      // client can prompt them to change. Password is null (they must
+      // continue via Google or use the reset flow to set one).
+      const username = `user_${randomBytes(4).toString('hex')}`;
+      const displayName = payload.name?.trim() || email.split('@')[0];
+      const avatarUrl = payload.picture ?? null;
+      user = await this.prisma.user.create({
+        data: {
+          email,
+          displayName,
+          username,
+          avatarUrl,
+          emailVerified: true,
+        },
+        select: { ...SESSION_USER_SELECT, twoFactorEnabled: true },
+      });
+      this.mailQueue
+        .queueWelcome(email, displayName)
+        .catch((err) =>
+          this.logger.error('Failed to queue welcome email', err),
+        );
+    }
+
+    const result = await this.issueSessionOrChallenge(
+      user.id,
+      user.role,
+      user.twoFactorEnabled,
+      { device: dto.device ?? session.device, ip: session.ip },
+    );
+    if ('requiresTwoFactor' in result) return result;
+    const { twoFactorEnabled: _, ...safeUser } = user;
     return { user: safeUser, ...result };
   }
 

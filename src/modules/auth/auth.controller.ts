@@ -36,6 +36,7 @@ import {
 } from './dto/auth-responses.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { CheckUsernameDto } from './dto/check-username.dto';
+import { GoogleSignInDto } from './dto/google-auth.dto';
 import { LoginDto } from './dto/login.dto';
 import { RequestOtpDto, VerifyEmailDto, VerifyOtpDto } from './dto/otp.dto';
 import { RefreshDto } from './dto/refresh.dto';
@@ -114,6 +115,32 @@ export class AuthController {
   @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
   login(@Body() dto: LoginDto, @Ip() ip: string) {
     return this.auth.login(dto, { ip });
+  }
+
+  @Public()
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @HttpCode(200)
+  @Post('google')
+  @ApiOperation({
+    summary: 'Sign in with Google',
+    description:
+      "Exchange a Google ID token (from the client's Google SDK) for a KinoX+ session. New Google users are auto-created with emailVerified=true, a placeholder username like `user_a1b2c3d4` (client should prompt to rename), the display name from Google, and Google's avatar URL. Existing accounts with the same email are linked and logged in. 2FA gate applies — see the `requiresTwoFactor` branch just like /auth/login.",
+  })
+  @ApiEnvelope([AuthSessionDto, TwoFactorRequiredDto], {
+    description:
+      'Either a full session or, if 2FA is enabled, a challenge to redeem at POST /auth/2fa/challenge.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'GOOGLE_NOT_CONFIGURED (env var missing on the server)',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'GOOGLE_TOKEN_INVALID | GOOGLE_EMAIL_UNVERIFIED',
+  })
+  @ApiResponse({ status: 429, description: 'Too many requests (10/min)' })
+  googleSignIn(@Body() dto: GoogleSignInDto, @Ip() ip: string) {
+    return this.auth.googleSignIn(dto, { ip });
   }
 
   @Public()
