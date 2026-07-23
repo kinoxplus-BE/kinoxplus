@@ -1,6 +1,6 @@
 # KinoXplus Backend
 
-Digital entertainment platform. Core differentiator: **synced Watch Rooms** — watch together, in perfect sync, with voice + text chat.
+Digital entertainment platform. Core differentiator: **synced Watch Rooms** — watch together, feel together, with voice + text chat.
 
 > **Read [AGENTS.md](./AGENTS.md) first.** It is the single source of truth for architecture, the Socket.io event contract, the build order, and scope discipline.
 

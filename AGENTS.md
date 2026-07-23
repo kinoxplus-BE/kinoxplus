@@ -1,6 +1,6 @@
 # GRAFLIX — Backend Scaffold & Architecture Guide
 
-> Digital entertainment platform. Core differentiator: **synced Watch Rooms** (watch together, in perfect sync, with voice + text chat).
+> Digital entertainment platform. Core differentiator: **synced Watch Rooms** (watch together, feel together, with voice + text chat).
 > This document is the single source of truth for scaffolding and building the backend. It doubles as an `AGENTS.md`-style context file for a coding assistant.
 
 **Stack:** TypeScript · NestJS (on Express) · Prisma 7 · PostgreSQL · Redis · Socket.io · LiveKit · Cloudflare Stream · BullMQ · Paystack/Flutterwave
