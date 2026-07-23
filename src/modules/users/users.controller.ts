@@ -7,9 +7,14 @@ import {
   Param,
   Patch,
   Post,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -46,6 +51,55 @@ export class UsersController {
   @ApiResponse({ status: 200, description: 'Profile updated' })
   updateProfile(@CurrentUser() user: AuthUser, @Body() dto: UpdateProfileDto) {
     return this.users.updateProfile(user.id, dto);
+  }
+
+  // ────────────────────── Avatar upload ──────────────────────
+
+  @Post('me/avatar')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      // 5MB cap — anything a phone camera produces fits; huge files get
+      // rejected before we bother Cloudinary.
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Upload / replace avatar',
+    description:
+      'multipart/form-data with a single "file" field. Max 5MB. Accepted: JPEG, PNG, WebP, GIF, HEIC/HEIF. Cloudinary crops to 400×400 with face detection and returns the secure URL, which is saved to avatarUrl on your account. Response returns the updated user.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  @ApiResponse({ status: 201, description: 'Avatar updated' })
+  @ApiResponse({
+    status: 400,
+    description: 'NO_FILE | INVALID_FILE_TYPE | UPLOADS_NOT_CONFIGURED',
+  })
+  @ApiResponse({ status: 413, description: 'File larger than 5MB' })
+  uploadAvatar(
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file: Express.Multer.File | undefined,
+  ) {
+    return this.users.uploadAvatar(user.id, file);
+  }
+
+  @Delete('me/avatar')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Remove avatar',
+    description:
+      'Clears avatarUrl so the UI falls back to the avatarColor swatch. The old image stays in Cloudinary (cleanup job pending).',
+  })
+  @ApiResponse({ status: 200, description: 'Avatar removed' })
+  removeAvatar(@CurrentUser() user: AuthUser) {
+    return this.users.removeAvatar(user.id);
   }
 
   @Post('me/devices')
