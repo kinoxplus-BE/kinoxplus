@@ -1,9 +1,9 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
-import { CursorPaginationDto } from '../../common/dto/pagination.dto';
 import { ApiEnvelope } from '../../common/swagger/api-envelope.decorator';
 import { CatalogService } from './catalog.service';
+import { CatalogTitlesQueryDto } from './dto/catalog-query.dto';
 import { CatalogTitleDto, GenreDto } from './dto/catalog-responses.dto';
 
 /** Browsing is public; playback is gated in the streaming module. */
@@ -17,14 +17,14 @@ export class CatalogController {
   @ApiOperation({
     summary: 'Browse the catalog',
     description:
-      'READY titles only, cursor-paginated. POC TMDB fields include posterUrl and backdropUrl; playback URLs are intentionally not exposed here.',
+      'READY titles only, cursor-paginated. Optionally filter by genre. POC TMDB fields include posterUrl and backdropUrl; playback URLs are intentionally not exposed here.',
   })
   @ApiEnvelope(CatalogTitleDto, {
     isArray: true,
     description: 'READY catalog titles',
   })
-  listTitles(@Query() pagination: CursorPaginationDto) {
-    return this.catalog.listTitles(pagination);
+  listTitles(@Query() query: CatalogTitlesQueryDto) {
+    return this.catalog.listTitles(query);
   }
 
   @Get('titles/:slug')

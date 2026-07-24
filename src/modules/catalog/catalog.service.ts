@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { UNSAFE_CATALOG_CONTAINS_TERMS } from '../../common/content/content-safety';
+import type { GenreName } from '../../common/constants/genres';
 import type { CursorPaginationDto } from '../../common/dto/pagination.dto';
 import { TitleStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -28,14 +29,21 @@ const safeReadyTitleWhere = {
   ]),
 } as const;
 
+interface CatalogTitleFilters extends CursorPaginationDto {
+  genre?: GenreName;
+}
+
 @Injectable()
 export class CatalogService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** Browsable catalog — READY titles only, cursor-paginated. */
-  async listTitles({ cursor, limit }: CursorPaginationDto) {
+  async listTitles({ cursor, limit, genre }: CatalogTitleFilters) {
     const titles = await this.prisma.title.findMany({
-      where: safeReadyTitleWhere,
+      where: {
+        ...safeReadyTitleWhere,
+        ...(genre ? { genres: { some: { genre: { name: genre } } } } : {}),
+      },
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
