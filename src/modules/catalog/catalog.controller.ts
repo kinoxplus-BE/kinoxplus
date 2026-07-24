@@ -4,7 +4,7 @@ import { Public } from '../../common/decorators/public.decorator';
 import { CursorPaginationDto } from '../../common/dto/pagination.dto';
 import { ApiEnvelope } from '../../common/swagger/api-envelope.decorator';
 import { CatalogService } from './catalog.service';
-import { GenreDto } from './dto/catalog-responses.dto';
+import { CatalogTitleDto, GenreDto } from './dto/catalog-responses.dto';
 
 /** Browsing is public; playback is gated in the streaming module. */
 @ApiTags('Catalog')
@@ -16,7 +16,12 @@ export class CatalogController {
   @Get('titles')
   @ApiOperation({
     summary: 'Browse the catalog',
-    description: 'READY titles only, cursor-paginated.',
+    description:
+      'READY titles only, cursor-paginated. POC TMDB fields include posterUrl and backdropUrl; playback URLs are intentionally not exposed here.',
+  })
+  @ApiEnvelope(CatalogTitleDto, {
+    isArray: true,
+    description: 'READY catalog titles',
   })
   listTitles(@Query() pagination: CursorPaginationDto) {
     return this.catalog.listTitles(pagination);
@@ -24,6 +29,7 @@ export class CatalogController {
 
   @Get('titles/:slug')
   @ApiOperation({ summary: 'Get a title by slug' })
+  @ApiEnvelope(CatalogTitleDto, { description: 'READY catalog title' })
   getTitle(@Param('slug') slug: string) {
     return this.catalog.getBySlug(slug);
   }

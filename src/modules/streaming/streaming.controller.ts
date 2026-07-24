@@ -7,12 +7,16 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { SubscriptionGuard } from '../../common/guards/subscription.guard';
+import { ApiEnvelope } from '../../common/swagger/api-envelope.decorator';
 import { Role, TitleStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DirectUploadDto, PlaybackUrlDto } from './dto/streaming-responses.dto';
 import { VIDEO_PROVIDER, type VideoProvider } from './video-provider.interface';
 
+@ApiTags('Streaming')
 @Controller('streaming')
 export class StreamingController {
   constructor(
@@ -21,6 +25,13 @@ export class StreamingController {
   ) {}
 
   /** Admin ingest: allocate a direct-creator upload for a title. */
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Create an admin upload URL for a title',
+    description:
+      'Cloudflare Stream ingest path for licensed content. POC TMDB titles do not use this.',
+  })
+  @ApiEnvelope(DirectUploadDto, { description: 'Direct upload allocation' })
   @Roles(Role.ADMIN)
   @Post('titles/:titleId/upload-url')
   async createUpload(@Param('titleId') titleId: string) {
@@ -28,6 +39,13 @@ export class StreamingController {
   }
 
   /** Signed playback URL — subscription-gated (never expose raw stream ids to guests). */
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get a playable URL for a title',
+    description:
+      'Subscription-gated playback endpoint. POC titles return provider=poc-hls with a public demo stream; real titles return provider=cloudflare-stream with a signed URL.',
+  })
+  @ApiEnvelope(PlaybackUrlDto, { description: 'Playable title URL' })
   @UseGuards(SubscriptionGuard)
   @Get('titles/:titleId/playback')
   async playback(@Param('titleId') titleId: string) {
