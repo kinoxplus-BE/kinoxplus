@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import { PrismaPg } from '@prisma/adapter-pg';
 import { unsafeContentReason } from '../common/content/content-safety';
 import { GENRES } from '../common/constants/genres';
 import {
@@ -7,6 +6,7 @@ import {
   TitleStatus,
   TitleType,
 } from '../generated/prisma/client';
+import { createPrismaPgAdapter } from '../prisma/prisma-pg-adapter';
 
 const TMDB_API_BASE = 'https://api.themoviedb.org/3';
 const DEFAULT_LIMIT = 100;
@@ -89,7 +89,7 @@ if (!databaseUrl) {
 }
 
 const prisma = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: databaseUrl }),
+  adapter: createPrismaPgAdapter(databaseUrl),
 });
 
 async function main(): Promise<void> {

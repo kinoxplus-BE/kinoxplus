@@ -1,7 +1,7 @@
 import 'dotenv/config';
-import { PrismaPg } from '@prisma/adapter-pg';
 import { unsafeContentReason } from '../common/content/content-safety';
 import { PrismaClient, TitleStatus } from '../generated/prisma/client';
+import { createPrismaPgAdapter } from '../prisma/prisma-pg-adapter';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -9,7 +9,7 @@ if (!databaseUrl) {
 }
 
 const prisma = new PrismaClient({
-  adapter: new PrismaPg({ connectionString: databaseUrl }),
+  adapter: createPrismaPgAdapter(databaseUrl),
 });
 
 async function main(): Promise<void> {

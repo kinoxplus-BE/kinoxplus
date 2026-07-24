@@ -1,6 +1,9 @@
 # Frontend Movie Catalog + Playback Integration
 
 This is the React Native/Web handoff for the current KinoX+ POC movie flow.
+The backend may seed either TMDB demo metadata or genuine Internet Archive
+public-domain/open-license titles, but the frontend API contract stays the
+same.
 
 Important: the frontend must not call TMDB directly and must never receive the
 TMDB API token. TMDB is backend-only seed data. The app consumes KinoX+ catalog
@@ -256,8 +259,9 @@ Response:
 }
 ```
 
-For the POC, `provider` will usually be `poc-hls`. Later, licensed Cloudflare
-content will return `cloudflare-stream`.
+For the POC, `provider` will usually be `poc-hls`; that value can point to a
+public HLS stream or a legal public-domain/open-license MP4 from Internet
+Archive. Later, licensed Cloudflare content will return `cloudflare-stream`.
 
 React Native example:
 
@@ -468,8 +472,10 @@ type CatalogHomeResponse = {
 ## 12. POC Legal/Content Notes
 
 - TMDB metadata is for catalog display only.
-- The POC playback URL is a legal demo/open sample stream, not the actual TMDB
-  movie.
+- Internet Archive seeded titles are genuine public-domain/open-license titles
+  where the title and playback file match.
+- Old TMDB POC playback URLs are legal demo/open sample streams, not the actual
+  TMDB movies.
 - Add this attribution in Settings/About:
 
 ```text
