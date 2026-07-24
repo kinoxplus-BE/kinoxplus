@@ -35,6 +35,7 @@ export class CatalogTitleDto {
   name!: string;
 
   @ApiProperty({
+    type: String,
     nullable: true,
     example: 'Batman raises the stakes in his war on crime.',
   })
@@ -43,10 +44,11 @@ export class CatalogTitleDto {
   @ApiProperty({ enum: TitleType, example: TitleType.MOVIE })
   type!: TitleType;
 
-  @ApiProperty({ nullable: true, example: 2008 })
+  @ApiProperty({ type: Number, nullable: true, example: 2008 })
   year!: number | null;
 
   @ApiProperty({
+    type: Number,
     nullable: true,
     example: 9120,
     description: 'Runtime in seconds.',
@@ -54,12 +56,14 @@ export class CatalogTitleDto {
   durationSec!: number | null;
 
   @ApiProperty({
+    type: String,
     nullable: true,
     example: 'https://image.tmdb.org/t/p/w500/qJ2tW6WMUDux911r6m7haRef0WH.jpg',
   })
   posterUrl!: string | null;
 
   @ApiProperty({
+    type: String,
     nullable: true,
     example: 'https://image.tmdb.org/t/p/w780/hkBaDkMWbLaf8B1lsWsKX7Ew3Xq.jpg',
   })
