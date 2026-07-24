@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { UNSAFE_CATALOG_CONTAINS_TERMS } from '../../common/content/content-safety';
 import type { CursorPaginationDto } from '../../common/dto/pagination.dto';
 import { TitleStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -19,6 +20,14 @@ const publicTitleSelect = {
   genres: { include: { genre: true } },
 } as const;
 
+const safeReadyTitleWhere = {
+  status: TitleStatus.READY,
+  NOT: UNSAFE_CATALOG_CONTAINS_TERMS.flatMap((term) => [
+    { name: { contains: term, mode: 'insensitive' as const } },
+    { description: { contains: term, mode: 'insensitive' as const } },
+  ]),
+} as const;
+
 @Injectable()
 export class CatalogService {
   constructor(private readonly prisma: PrismaService) {}
@@ -26,7 +35,7 @@ export class CatalogService {
   /** Browsable catalog — READY titles only, cursor-paginated. */
   async listTitles({ cursor, limit }: CursorPaginationDto) {
     const titles = await this.prisma.title.findMany({
-      where: { status: TitleStatus.READY },
+      where: safeReadyTitleWhere,
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -46,7 +55,7 @@ export class CatalogService {
       where: { slug },
       select: publicTitleSelect,
     });
-    if (!title || title.status !== TitleStatus.READY) {
+    if (!title || title.status !== TitleStatus.READY || isUnsafeTitle(title)) {
       throw new NotFoundException({
         code: 'TITLE_NOT_FOUND',
         message: 'Title not found.',
@@ -58,4 +67,12 @@ export class CatalogService {
   listGenres() {
     return this.prisma.genre.findMany({ orderBy: { name: 'asc' } });
   }
+}
+
+function isUnsafeTitle(title: {
+  name: string;
+  description: string | null;
+}): boolean {
+  const text = `${title.name} ${title.description ?? ''}`.toLowerCase();
+  return UNSAFE_CATALOG_CONTAINS_TERMS.some((term) => text.includes(term));
 }

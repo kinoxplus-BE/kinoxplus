@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
+import { unsafeContentReason } from '../common/content/content-safety';
 import { GENRES } from '../common/constants/genres';
 import {
   PrismaClient,
@@ -99,6 +100,7 @@ async function main(): Promise<void> {
   console.log(`Fetching ${limit} popular TMDB movies (${language})...`);
 
   await ensureGenres();
+  await archiveExistingUnsafePocTitles();
 
   const [imageConfig, genreMap, movies] = await Promise.all([
     fetchImageConfig(token),
@@ -107,9 +109,25 @@ async function main(): Promise<void> {
   ]);
 
   let createdOrUpdated = 0;
+  let skippedUnsafe = 0;
   for (const [index, movie] of movies.entries()) {
     const details = await fetchMovieDetails(token, movie.id, language);
     const title = details ?? movie;
+    const unsafeReason = unsafeContentReason({
+      adult: title.adult ?? movie.adult,
+      title: title.title,
+      originalTitle: title.original_title,
+      overview: title.overview,
+    });
+    if (unsafeReason) {
+      await archiveTmdbTitle(movie.id, unsafeReason);
+      skippedUnsafe += 1;
+      console.warn(
+        `Skipped unsafe TMDB title ${movie.id} (${unsafeReason}): ${title.title ?? title.original_title ?? 'Untitled'}`,
+      );
+      continue;
+    }
+
     const pocStream = POC_STREAMS[index % POC_STREAMS.length];
     const genreNames = pickGenreNames(movie, details, genreMap);
     const year = parseYear(title.release_date);
@@ -174,7 +192,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `TMDB seed complete: ${createdOrUpdated} READY titles with POC playback URLs.`,
+    `TMDB seed complete: ${createdOrUpdated} READY titles with POC playback URLs. Skipped ${skippedUnsafe} unsafe title(s).`,
   );
 }
 
@@ -207,6 +225,51 @@ async function ensureGenres(): Promise<void> {
   }
 }
 
+async function archiveExistingUnsafePocTitles(): Promise<void> {
+  const titles = await prisma.title.findMany({
+    where: {
+      status: TitleStatus.READY,
+      OR: [{ tmdbId: { not: null } }, { pocPlaybackUrl: { not: null } }],
+    },
+    select: {
+      id: true,
+      tmdbId: true,
+      name: true,
+      description: true,
+    },
+  });
+
+  let archived = 0;
+  for (const title of titles) {
+    const reason = unsafeContentReason({
+      title: title.name,
+      description: title.description,
+    });
+    if (!reason) continue;
+
+    await prisma.title.update({
+      where: { id: title.id },
+      data: { status: TitleStatus.ARCHIVED },
+    });
+    archived += 1;
+    console.warn(`Archived unsafe existing title (${reason}): ${title.name}`);
+  }
+
+  if (archived > 0) {
+    console.log(`Archived ${archived} unsafe existing POC title(s).`);
+  }
+}
+
+async function archiveTmdbTitle(tmdbId: number, reason: string): Promise<void> {
+  await prisma.title.updateMany({
+    where: { tmdbId, status: TitleStatus.READY },
+    data: {
+      status: TitleStatus.ARCHIVED,
+      licenseSource: `Archived by POC content filter: ${reason}.`,
+    },
+  });
+}
+
 async function fetchPopularMovies(
   token: string,
   language: string,
@@ -225,6 +288,7 @@ async function fetchPopularMovies(
 
     for (const movie of response.results) {
       if (movie.adult) continue;
+      if (isUnsafeTmdbSummary(movie)) continue;
       movies.push(movie);
       if (movies.length >= limit) break;
     }
@@ -232,6 +296,17 @@ async function fetchPopularMovies(
   }
 
   return movies;
+}
+
+function isUnsafeTmdbSummary(movie: TmdbMovieSummary): boolean {
+  return (
+    unsafeContentReason({
+      adult: movie.adult,
+      title: movie.title,
+      originalTitle: movie.original_title,
+      overview: movie.overview,
+    }) !== null
+  );
 }
 
 async function fetchMovieDetails(
