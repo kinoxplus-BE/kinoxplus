@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Header,
   Inject,
   NotFoundException,
   Param,
@@ -33,6 +34,7 @@ export class StreamingController {
   })
   @ApiEnvelope(DirectUploadDto, { description: 'Direct upload allocation' })
   @Roles(Role.ADMIN)
+  @Header('Cache-Control', 'no-store')
   @Post('titles/:titleId/upload-url')
   async createUpload(@Param('titleId') titleId: string) {
     return this.video.createDirectUpload(titleId);
@@ -47,6 +49,7 @@ export class StreamingController {
   })
   @ApiEnvelope(PlaybackUrlDto, { description: 'Playable title URL' })
   @UseGuards(SubscriptionGuard)
+  @Header('Cache-Control', 'private, max-age=30')
   @Get('titles/:titleId/playback')
   async playback(@Param('titleId') titleId: string) {
     const title = await this.prisma.title.findUnique({

@@ -1,10 +1,20 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Header, Param, Query } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
 import { ApiEnvelope } from '../../common/swagger/api-envelope.decorator';
 import { CatalogService } from './catalog.service';
-import { CatalogTitlesQueryDto } from './dto/catalog-query.dto';
-import { CatalogTitleDto, GenreDto } from './dto/catalog-responses.dto';
+import {
+  CatalogHomeQueryDto,
+  CatalogTitlesQueryDto,
+} from './dto/catalog-query.dto';
+import {
+  CatalogHomeDto,
+  CatalogTitleDto,
+  GenreDto,
+} from './dto/catalog-responses.dto';
+
+const PUBLIC_CATALOG_CACHE_CONTROL =
+  'public, max-age=60, stale-while-revalidate=300';
 
 /** Browsing is public; playback is gated in the streaming module. */
 @ApiTags('Catalog')
@@ -23,13 +33,27 @@ export class CatalogController {
     isArray: true,
     description: 'READY catalog titles',
   })
+  @Header('Cache-Control', PUBLIC_CATALOG_CACHE_CONTROL)
   listTitles(@Query() query: CatalogTitlesQueryDto) {
     return this.catalog.listTitles(query);
+  }
+
+  @Get('home')
+  @ApiOperation({
+    summary: 'Get the movie home feed',
+    description:
+      'Aggregated cached rows for the first screen. Prefer this over many parallel genre requests on mobile and slow networks.',
+  })
+  @ApiEnvelope(CatalogHomeDto, { description: 'Curated catalog home rows' })
+  @Header('Cache-Control', PUBLIC_CATALOG_CACHE_CONTROL)
+  home(@Query() query: CatalogHomeQueryDto) {
+    return this.catalog.home(query);
   }
 
   @Get('titles/:slug')
   @ApiOperation({ summary: 'Get a title by slug' })
   @ApiEnvelope(CatalogTitleDto, { description: 'READY catalog title' })
+  @Header('Cache-Control', PUBLIC_CATALOG_CACHE_CONTROL)
   getTitle(@Param('slug') slug: string) {
     return this.catalog.getBySlug(slug);
   }
@@ -41,6 +65,7 @@ export class CatalogController {
       'Canonical genre list, alphabetical. Use these names to render the signup step-2 chips — POST /auth/register validates preferredGenres against exactly this list.',
   })
   @ApiEnvelope(GenreDto, { isArray: true, description: 'All genres' })
+  @Header('Cache-Control', PUBLIC_CATALOG_CACHE_CONTROL)
   listGenres() {
     return this.catalog.listGenres();
   }

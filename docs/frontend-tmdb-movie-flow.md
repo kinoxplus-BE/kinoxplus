@@ -112,7 +112,44 @@ Use `genre.name` as the filter value for `/catalog/titles?genre=Comedy`.
 
 ## 3. Fetch Movies
 
-### Home / All Movies
+### Recommended First Screen
+
+Use this for the Netflix-style home screen. It is a single cached backend
+request, so it is better for mobile users and poor network regions than firing
+many category requests at once.
+
+```http
+GET /catalog/home?limitPerGenre=12
+```
+
+Response shape:
+
+```json
+{
+  "success": true,
+  "data": {
+    "rows": [
+      {
+        "genre": "Comedy",
+        "titles": [
+          {
+            "id": "title-id",
+            "slug": "movie-slug",
+            "name": "Movie Name",
+            "posterUrl": "https://image.tmdb.org/t/p/w500/...",
+            "backdropUrl": "https://image.tmdb.org/t/p/w780/...",
+            "status": "READY",
+            "genres": []
+          }
+        ]
+      }
+    ]
+  },
+  "meta": {}
+}
+```
+
+### All Movies / Pagination
 
 ```http
 GET /catalog/titles?limit=20
@@ -168,12 +205,8 @@ GET /catalog/titles?genre=Drama&limit=20
 GET /catalog/titles?genre=Action&limit=20
 ```
 
-For a Netflix-style home page:
-
-1. Call `/catalog/genres`.
-2. Pick the category names you want to show.
-3. For each selected category, call `/catalog/titles?genre=<name>&limit=20`.
-4. Render each response as a horizontal row.
+For extra category pages, call `/catalog/titles?genre=<name>&limit=20` and
+paginate with `cursor`.
 
 The backend already filters unsafe/unpleasant POC titles out of catalog
 responses.
@@ -423,6 +456,13 @@ type PlaybackResponse = {
   url: string;
   provider: 'poc-hls' | 'cloudflare-stream';
 };
+
+type CatalogHomeResponse = {
+  rows: Array<{
+    genre: string;
+    titles: CatalogTitle[];
+  }>;
+};
 ```
 
 ## 12. POC Legal/Content Notes
@@ -440,6 +480,7 @@ This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ```bash
 curl "https://kinoxplus.onrender.com/catalog/titles?limit=5"
+curl "https://kinoxplus.onrender.com/catalog/home?limitPerGenre=6"
 curl "https://kinoxplus.onrender.com/catalog/genres"
 curl "https://kinoxplus.onrender.com/catalog/titles?genre=Comedy&limit=5"
 ```

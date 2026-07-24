@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { GENRES, type GenreName } from '../../../common/constants/genres';
 import { TitleStatus, TitleType } from '../../../generated/prisma/client';
 
 export class GenreDto {
@@ -80,4 +81,17 @@ export class CatalogTitleDto {
 
   @ApiProperty({ type: () => [TitleGenreDto] })
   genres!: TitleGenreDto[];
+}
+
+export class CatalogHomeRowDto {
+  @ApiProperty({ enum: GENRES, example: 'Comedy' })
+  genre!: GenreName;
+
+  @ApiProperty({ type: () => [CatalogTitleDto] })
+  titles!: CatalogTitleDto[];
+}
+
+export class CatalogHomeDto {
+  @ApiProperty({ type: () => [CatalogHomeRowDto] })
+  rows!: CatalogHomeRowDto[];
 }

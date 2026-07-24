@@ -21,6 +21,8 @@ export const envSchema = z.object({
   // Infra
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
+  CATALOG_CACHE_TTL_SEC: z.coerce.number().int().min(0).default(300),
+  CATALOG_CACHE_TIMEOUT_MS: z.coerce.number().int().positive().default(150),
 
   // Auth
   JWT_ACCESS_SECRET: z
@@ -42,6 +44,13 @@ export const envSchema = z.object({
   CF_STREAM_API_TOKEN: z.string().optional(),
   CF_STREAM_SIGNING_KEY_ID: z.string().optional(),
   CF_STREAM_SIGNING_KEY_PEM: z.string().optional(),
+  CF_STREAM_PLAYBACK_BASE_URL: z.string().optional(),
+  CF_STREAM_TOKEN_TTL_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(86_400)
+    .default(3_600),
 
   // TMDB metadata seed for POC catalog data.
   TMDB_READ_ACCESS_TOKEN: z.string().optional(),

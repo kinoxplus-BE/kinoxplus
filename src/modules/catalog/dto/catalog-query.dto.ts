@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsOptional } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsOptional, Max, Min } from 'class-validator';
 import { GENRES, type GenreName } from '../../../common/constants/genres';
 import { CursorPaginationDto } from '../../../common/dto/pagination.dto';
 
@@ -13,4 +14,19 @@ export class CatalogTitlesQueryDto extends CursorPaginationDto {
   @IsOptional()
   @IsIn(GENRES)
   genre?: GenreName;
+}
+
+export class CatalogHomeQueryDto {
+  @ApiPropertyOptional({
+    default: 12,
+    minimum: 1,
+    maximum: 40,
+    description: 'Maximum titles per curated home row.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(40)
+  limitPerGenre: number = 12;
 }
