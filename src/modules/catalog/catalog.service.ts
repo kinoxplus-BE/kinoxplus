@@ -3,6 +3,22 @@ import type { CursorPaginationDto } from '../../common/dto/pagination.dto';
 import { TitleStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
+const publicTitleSelect = {
+  id: true,
+  slug: true,
+  name: true,
+  description: true,
+  type: true,
+  year: true,
+  durationSec: true,
+  posterUrl: true,
+  backdropUrl: true,
+  status: true,
+  createdAt: true,
+  updatedAt: true,
+  genres: { include: { genre: true } },
+} as const;
+
 @Injectable()
 export class CatalogService {
   constructor(private readonly prisma: PrismaService) {}
@@ -14,7 +30,7 @@ export class CatalogService {
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-      include: { genres: { include: { genre: true } } },
+      select: publicTitleSelect,
     });
 
     const hasMore = titles.length > limit;
@@ -28,7 +44,7 @@ export class CatalogService {
   async getBySlug(slug: string) {
     const title = await this.prisma.title.findUnique({
       where: { slug },
-      include: { genres: { include: { genre: true } } },
+      select: publicTitleSelect,
     });
     if (!title || title.status !== TitleStatus.READY) {
       throw new NotFoundException({

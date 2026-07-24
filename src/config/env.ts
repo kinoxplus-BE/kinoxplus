@@ -43,6 +43,12 @@ export const envSchema = z.object({
   CF_STREAM_SIGNING_KEY_ID: z.string().optional(),
   CF_STREAM_SIGNING_KEY_PEM: z.string().optional(),
 
+  // TMDB metadata seed for POC catalog data.
+  TMDB_READ_ACCESS_TOKEN: z.string().optional(),
+  TMDB_TOKEN: z.string().optional(),
+  TMDB_SEED_LIMIT: z.coerce.number().int().positive().optional(),
+  TMDB_LANGUAGE: z.string().optional(),
+
   // Cloudinary
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
   CLOUDINARY_API_KEY: z.string().optional(),

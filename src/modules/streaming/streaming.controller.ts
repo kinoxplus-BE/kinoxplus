@@ -33,15 +33,32 @@ export class StreamingController {
   async playback(@Param('titleId') titleId: string) {
     const title = await this.prisma.title.findUnique({
       where: { id: titleId },
-      select: { streamVideoId: true, status: true },
+      select: { streamVideoId: true, pocPlaybackUrl: true, status: true },
     });
-    if (!title || title.status !== TitleStatus.READY || !title.streamVideoId) {
+    if (
+      !title ||
+      title.status !== TitleStatus.READY ||
+      (!title.streamVideoId && !title.pocPlaybackUrl)
+    ) {
       throw new NotFoundException({
         code: 'TITLE_NOT_PLAYABLE',
         message: 'Title not found or not ready for playback.',
       });
     }
-    const url = await this.video.getSignedPlaybackUrl(title.streamVideoId);
-    return { url };
+
+    if (title.pocPlaybackUrl) {
+      return { url: title.pocPlaybackUrl, provider: 'poc-hls' };
+    }
+
+    const streamVideoId = title.streamVideoId;
+    if (!streamVideoId) {
+      throw new NotFoundException({
+        code: 'TITLE_NOT_PLAYABLE',
+        message: 'Title not found or not ready for playback.',
+      });
+    }
+
+    const url = await this.video.getSignedPlaybackUrl(streamVideoId);
+    return { url, provider: 'cloudflare-stream' };
   }
 }

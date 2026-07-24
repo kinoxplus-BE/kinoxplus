@@ -138,6 +138,11 @@ model Title {
   year          Int?
   durationSec   Int?
   posterUrl     String?
+  backdropUrl   String?
+  tmdbId        Int?        @unique
+  // Temporary public HLS URL for POC/demo titles. Real licensed content uses
+  // streamVideoId + signed Cloudflare Stream playback.
+  pocPlaybackUrl String?
   // Cloudflare Stream video id (null until ingested & ready)
   streamVideoId String?     @unique
   status        TitleStatus @default(DRAFT)

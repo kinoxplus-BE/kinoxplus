@@ -37,6 +37,7 @@ async function main(): Promise<void> {
       description: 'Seed data for local development — replace with licensed content.',
       year: 2026,
       durationSec: 5400,
+      pocPlaybackUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
       status: TitleStatus.READY,
       licenseSource: 'DEV SEED — not licensed',
       genres: { create: { genreId: drama.id } },

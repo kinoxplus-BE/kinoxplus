@@ -68,6 +68,12 @@ services:
         sync: false
       - key: CF_STREAM_SIGNING_KEY_PEM
         sync: false
+      - key: TMDB_READ_ACCESS_TOKEN
+        sync: false
+      - key: TMDB_SEED_LIMIT
+        value: "100"
+      - key: TMDB_LANGUAGE
+        value: en-US
       - key: PAYSTACK_SECRET_KEY
         sync: false
       - key: PAYSTACK_WEBHOOK_SECRET
