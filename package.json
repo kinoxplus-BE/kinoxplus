@@ -22,6 +22,8 @@
     "db:seed:tmdb:prod": "node dist/scripts/seed-tmdb.js",
     "db:seed:archive": "tsx src/scripts/seed-internet-archive.ts",
     "db:seed:archive:prod": "node dist/scripts/seed-internet-archive.js",
+    "stream:copy-archive": "tsx src/scripts/copy-archive-to-cloudflare.ts",
+    "stream:copy-archive:prod": "node dist/scripts/copy-archive-to-cloudflare.js",
     "db:cleanup:tmdb": "tsx src/scripts/cleanup-unsafe-poc-titles.ts",
     "db:cleanup:tmdb:prod": "node dist/scripts/cleanup-unsafe-poc-titles.js",
     "test": "jest --passWithNoTests",
