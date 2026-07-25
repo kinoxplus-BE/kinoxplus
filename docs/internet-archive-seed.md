@@ -69,50 +69,15 @@ that were previously seeded but later moved behind legal/source review.
 Use `ARCHIVE_SEED_INCLUDE_LEGAL_REVIEW_TITLES=true` only after reviewing titles
 marked `requiresLegalReview` in the curated list.
 
-## Copy To Cloudflare Stream
+## Cloudflare Stream Later
 
-After Cloudflare Stream is configured, copy the seeded Archive movies into your
-Cloudflare account:
-
-```powershell
-$env:DATABASE_URL="postgresql://...?sslmode=require"
-$env:REDIS_URL="redis://..."
-$env:CF_ACCOUNT_ID="..."
-$env:CF_STREAM_API_TOKEN="..."
-$env:CF_STREAM_COPY_WAIT="true"
-npm run stream:copy-archive
-```
-
-Do not paste real tokens, database passwords, or private keys into chat. Keep
-them in Render/local environment variables only.
-
-The copy command is safe to rerun. It queues any Archive title that does not yet
-have a Cloudflare `streamVideoId`, polls readiness when
-`CF_STREAM_COPY_WAIT=true`, and clears `Title.pocPlaybackUrl` only after
-Cloudflare reports the video is ready. That means playback keeps working from
-Archive during ingestion, then the existing playback endpoint starts returning
-signed Cloudflare Stream URLs automatically.
-
-Samuel's frontend still does not change:
-
-```http
-GET /catalog/titles
-GET /catalog/titles/:slug
-GET /streaming/titles/:titleId/playback
-```
-
-Optional copy switches:
-
-```env
-CF_STREAM_COPY_LIMIT=
-CF_STREAM_COPY_WAIT=false
-CF_STREAM_COPY_TIMEOUT_MS=1800000
-CF_STREAM_COPY_POLL_INTERVAL_MS=30000
-```
+The current seed plays directly from Archive MP4 URLs. The next production step
+is a backend-only migration that copies these public URLs into Cloudflare Stream,
+waits for Stream readiness, then switches the same `Title` rows to
+`streamVideoId`. Samuel's frontend still does not change.
 
 Source docs:
 
 - Internet Archive metadata API: https://doc-tools.readthedocs.io/en/ia-test-gsod/md-read.html
 - Internet Archive search API: https://doc-tools.readthedocs.io/en/ia-test-gsod/item-search-apis.html
 - Internet Archive copyright caution: https://archivesupport.zendesk.com/hc/en-us/articles/360017808151-Movies-and-Videos-A-Basic-Guide
-- Cloudflare Stream upload via link: https://developers.cloudflare.com/stream/uploading-videos/upload-via-link/
