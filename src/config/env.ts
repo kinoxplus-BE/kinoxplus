@@ -69,6 +69,18 @@ export const envSchema = z.object({
     .positive()
     .max(86_400)
     .default(3_600),
+  CF_STREAM_PLAYBACK_URL_CACHE_SEC: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(3_600)
+    .default(300),
+  CF_STREAM_API_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(30_000)
+    .default(4_000),
 
   // TMDB metadata seed for POC catalog data.
   TMDB_READ_ACCESS_TOKEN: z.string().optional(),

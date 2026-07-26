@@ -309,6 +309,21 @@ For mobile users in weak network regions:
   wastes bandwidth.
 - Use catalog `/home` rather than many parallel genre requests on app launch.
 - Cache catalog JSON/images locally, but not signed playback URLs.
+- In the video player, use the platform HLS engine's default adaptive bitrate
+  behavior. Do not force the highest quality at startup.
+- If the first playback attempt fails before the first frame, show a Retry
+  button that calls `/streaming/titles/:titleId/playback` again before reopening
+  the player.
+
+Backend performance knobs already in use:
+
+```env
+CF_STREAM_PLAYBACK_URL_CACHE_SEC=300
+CF_STREAM_API_TIMEOUT_MS=4000
+```
+
+These keep playback URL issuance fast under concurrent Play taps without
+changing the frontend API shape.
 
 ## 10. End-To-End User Flow
 

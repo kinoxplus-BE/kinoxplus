@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { createSign } from 'node:crypto';
 import { TitleStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RedisService } from '../../redis/redis.service';
 import type { DirectUpload, VideoProvider } from './video-provider.interface';
 
 type CloudflareApiError = {
@@ -37,14 +38,20 @@ const DEFAULT_PLAYBACK_BASE_URL = 'https://videodelivery.net';
 const DEFAULT_UPLOAD_EXPIRY_SEC = 60 * 60 * 2;
 const DEFAULT_TOKEN_TTL_SEC = 60 * 60;
 const MAX_STREAM_TOKEN_TTL_SEC = 60 * 60 * 24;
+const DEFAULT_PLAYBACK_URL_CACHE_SEC = 5 * 60;
+const PLAYBACK_URL_CACHE_SAFETY_SEC = 60;
+const DEFAULT_CLOUDFLARE_API_TIMEOUT_MS = 4_000;
+const DEFAULT_CLOUDFLARE_API_ATTEMPTS = 2;
 
 @Injectable()
 export class CloudflareStreamService implements VideoProvider {
   private readonly logger = new Logger(CloudflareStreamService.name);
+  private readonly pendingPlaybackUrls = new Map<string, Promise<string>>();
 
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
   ) {
     if (!this.config.get<string>('CF_STREAM_API_TOKEN')) {
       this.logger.warn(
@@ -78,24 +85,23 @@ export class CloudflareStreamService implements VideoProvider {
       ? Math.min(Math.ceil(title.durationSec) + 300, 36_000)
       : -1;
 
-    const result =
-      await this.cloudflareRequest<CloudflareDirectUploadResult>(
-        `/accounts/${accountId}/stream/direct_upload`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Upload-Creator': title.id,
-          },
-          body: JSON.stringify({
-            maxDurationSeconds,
-            creator: title.id,
-            expiry: uploadExpiry,
-            meta: { titleId: title.id, name: title.name },
-            requireSignedURLs: true,
-          }),
+    const result = await this.cloudflareRequest<CloudflareDirectUploadResult>(
+      `/accounts/${accountId}/stream/direct_upload`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Upload-Creator': title.id,
         },
-      );
+        body: JSON.stringify({
+          maxDurationSeconds,
+          creator: title.id,
+          expiry: uploadExpiry,
+          meta: { titleId: title.id, name: title.name },
+          requireSignedURLs: true,
+        }),
+      },
+    );
 
     if (!result.uid || !result.uploadURL) {
       throw new BadGatewayException({
@@ -117,11 +123,31 @@ export class CloudflareStreamService implements VideoProvider {
   }
 
   async getSignedPlaybackUrl(videoId: string): Promise<string> {
+    const cached = await this.getCachedPlaybackUrl(videoId);
+    if (cached) return cached;
+
+    const pending = this.pendingPlaybackUrls.get(videoId);
+    if (pending) return pending;
+
+    const created = this.createAndCacheSignedPlaybackUrl(videoId).finally(
+      () => {
+        this.pendingPlaybackUrls.delete(videoId);
+      },
+    );
+    this.pendingPlaybackUrls.set(videoId, created);
+    return created;
+  }
+
+  private async createAndCacheSignedPlaybackUrl(
+    videoId: string,
+  ): Promise<string> {
     const token = this.hasLocalSigningConfig()
       ? this.createLocalSignedToken(videoId)
       : await this.createApiSignedToken(videoId);
 
-    return `${this.getPlaybackBaseUrl()}/${token}/manifest/video.m3u8`;
+    const url = `${this.getPlaybackBaseUrl()}/${token}/manifest/video.m3u8`;
+    await this.cachePlaybackUrl(videoId, url);
+    return url;
   }
 
   private createLocalSignedToken(videoId: string): string {
@@ -143,7 +169,9 @@ export class CloudflareStreamService implements VideoProvider {
       nbf: now - 10,
     };
     const unsigned = `${base64UrlJson(header)}.${base64UrlJson(payload)}`;
-    const signature = createSign('RSA-SHA256').update(unsigned).sign(privateKey);
+    const signature = createSign('RSA-SHA256')
+      .update(unsigned)
+      .sign(privateKey);
 
     return `${unsigned}.${base64Url(signature)}`;
   }
@@ -161,6 +189,7 @@ export class CloudflareStreamService implements VideoProvider {
           nbf: now - 10,
         }),
       },
+      { attempts: DEFAULT_CLOUDFLARE_API_ATTEMPTS },
     );
 
     if (!result.token) {
@@ -176,39 +205,120 @@ export class CloudflareStreamService implements VideoProvider {
   private async cloudflareRequest<T>(
     path: string,
     init: RequestInit,
+    options: { attempts?: number } = {},
   ): Promise<T> {
     const apiToken = this.getRequiredConfig('CF_STREAM_API_TOKEN');
-    const response = await fetch(`${CLOUDFLARE_API_BASE}${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        ...((init.headers as Record<string, string> | undefined) ?? {}),
-      },
-    });
+    const attempts = options.attempts ?? 1;
+    let lastError: unknown;
 
-    let body: CloudflareApiResponse<T> | null = null;
-    try {
-      body = (await response.json()) as CloudflareApiResponse<T>;
-    } catch {
-      body = null;
-    }
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        this.getCloudflareApiTimeoutMs(),
+      );
+      try {
+        const response = await fetch(`${CLOUDFLARE_API_BASE}${path}`, {
+          ...init,
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${apiToken}`,
+            ...((init.headers as Record<string, string> | undefined) ?? {}),
+          },
+        });
 
-    if (!response.ok || !body?.success || !body.result) {
-      throw new BadGatewayException({
-        code: 'CLOUDFLARE_STREAM_ERROR',
-        message:
+        let body: CloudflareApiResponse<T> | null = null;
+        try {
+          body = (await response.json()) as CloudflareApiResponse<T>;
+        } catch {
+          body = null;
+        }
+
+        if (response.ok && body?.success && body.result) {
+          return body.result;
+        }
+
+        const message =
           getCloudflareMessage(body) ??
-          `Cloudflare Stream request failed with status ${response.status}.`,
-      });
+          `Cloudflare Stream request failed with status ${response.status}.`;
+        if (
+          attempt < attempts &&
+          (response.status === 429 || response.status >= 500)
+        ) {
+          await sleep(150 * attempt);
+          continue;
+        }
+
+        throw new BadGatewayException({
+          code: 'CLOUDFLARE_STREAM_ERROR',
+          message,
+        });
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts || error instanceof BadGatewayException) {
+          break;
+        }
+        await sleep(150 * attempt);
+      } finally {
+        clearTimeout(timeout);
+      }
     }
 
-    return body.result;
+    if (lastError instanceof BadGatewayException) {
+      throw lastError;
+    }
+    throw new BadGatewayException({
+      code: 'CLOUDFLARE_STREAM_ERROR',
+      message:
+        lastError instanceof Error
+          ? `Cloudflare Stream request failed: ${lastError.message}`
+          : 'Cloudflare Stream request failed.',
+    });
+  }
+
+  private async getCachedPlaybackUrl(videoId: string): Promise<string | null> {
+    if (this.getPlaybackUrlCacheSec() <= 0) return null;
+
+    try {
+      return await this.redis.client.get(this.playbackUrlCacheKey(videoId));
+    } catch (error) {
+      this.logger.warn(
+        `Playback URL cache read failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+      return null;
+    }
+  }
+
+  private async cachePlaybackUrl(videoId: string, url: string): Promise<void> {
+    const cacheSec = this.getPlaybackUrlCacheSec();
+    if (cacheSec <= 0) return;
+
+    try {
+      await this.redis.client.set(
+        this.playbackUrlCacheKey(videoId),
+        url,
+        'EX',
+        cacheSec,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Playback URL cache write failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
+  }
+
+  private playbackUrlCacheKey(videoId: string): string {
+    return `streaming:playback-url:v1:${videoId}`;
   }
 
   private hasLocalSigningConfig(): boolean {
     return Boolean(
       this.config.get<string>('CF_STREAM_SIGNING_KEY_ID') &&
-        this.config.get<string>('CF_STREAM_SIGNING_KEY_PEM'),
+      this.config.get<string>('CF_STREAM_SIGNING_KEY_PEM'),
     );
   }
 
@@ -245,6 +355,26 @@ export class CloudflareStreamService implements VideoProvider {
     return Math.min(configured, MAX_STREAM_TOKEN_TTL_SEC);
   }
 
+  private getPlaybackUrlCacheSec(): number {
+    const configured =
+      this.config.get<number>('CF_STREAM_PLAYBACK_URL_CACHE_SEC') ??
+      DEFAULT_PLAYBACK_URL_CACHE_SEC;
+    return Math.max(
+      0,
+      Math.min(
+        configured,
+        this.getTokenTtlSec() - PLAYBACK_URL_CACHE_SAFETY_SEC,
+      ),
+    );
+  }
+
+  private getCloudflareApiTimeoutMs(): number {
+    return (
+      this.config.get<number>('CF_STREAM_API_TIMEOUT_MS') ??
+      DEFAULT_CLOUDFLARE_API_TIMEOUT_MS
+    );
+  }
+
   private getRequiredConfig(key: string): string {
     const value = this.config.get<string>(key);
     if (!value) {
@@ -276,4 +406,8 @@ function getCloudflareMessage<T>(
     response?.errors?.find((error) => error.message)?.message ??
     response?.messages?.find((item) => item.message)?.message;
   return message ?? null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
