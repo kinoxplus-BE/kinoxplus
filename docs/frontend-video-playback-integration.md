@@ -54,7 +54,7 @@ Errors are wrapped:
 
 ## 1. Auth Requirement
 
-Catalog browsing is public, but playback requires:
+Catalog browsing is public, but playback requires login:
 
 ```http
 Authorization: Bearer ACCESS_TOKEN
@@ -62,6 +62,11 @@ Authorization: Bearer ACCESS_TOKEN
 
 Use the access token from login/register/refresh. If playback returns `401`,
 refresh the token if possible, then retry once.
+
+During the current test/demo phase, the backend has
+`PLAYBACK_SUBSCRIPTION_REQUIRED=false`, so any authenticated user can request a
+playback URL. When payments are fully wired, the backend can set that flag back
+to `true` and the same endpoint will require an active subscription again.
 
 ## 2. Fetch The Home Feed
 
@@ -277,6 +282,7 @@ User is not logged in or token expired. Refresh token/re-login.
 ```
 
 User does not have an active subscription. Navigate to subscription/payment.
+This only applies when `PLAYBACK_SUBSCRIPTION_REQUIRED=true`.
 
 ```text
 404 TITLE_NOT_PLAYABLE

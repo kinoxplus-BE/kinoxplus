@@ -5,6 +5,7 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Role } from '../../generated/prisma/client';
 import { SubscriptionsService } from '../../modules/subscriptions/subscriptions.service';
 import type { AuthenticatedRequest } from '../types';
@@ -15,7 +16,10 @@ import type { AuthenticatedRequest } from '../types';
  */
 @Injectable()
 export class SubscriptionGuard implements CanActivate {
-  constructor(private readonly subscriptions: SubscriptionsService) {}
+  constructor(
+    private readonly subscriptions: SubscriptionsService,
+    private readonly config: ConfigService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const { user } = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -25,6 +29,10 @@ export class SubscriptionGuard implements CanActivate {
         message: 'Missing access token.',
       });
     }
+    if (!this.config.get<boolean>('PLAYBACK_SUBSCRIPTION_REQUIRED')) {
+      return true;
+    }
+
     if (user.role === Role.ADMIN) return true;
 
     if (!(await this.subscriptions.isActive(user.id))) {

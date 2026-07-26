@@ -1,5 +1,19 @@
 import { z } from 'zod';
 
+const envBoolean = (defaultValue: boolean) =>
+  z.preprocess((value) => {
+    if (value === undefined || value === null || value === '') {
+      return defaultValue;
+    }
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+      if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+    return value;
+  }, z.boolean());
+
 /**
  * Environment schema — validated at boot. The app refuses to start if a
  * required var is missing or malformed (see AGENTS.md §4).
@@ -33,6 +47,10 @@ export const envSchema = z.object({
   // in Postgres, not signed JWTs.
   JWT_REFRESH_TTL: z.coerce.number().int().positive().default(2_592_000),
   ARGON2_MEMORY_COST: z.coerce.number().int().positive().default(19_456),
+
+  // Playback entitlement gate. Keep false while the app is in testing/demo
+  // mode; set true once payments/subscriptions are fully wired.
+  PLAYBACK_SUBSCRIPTION_REQUIRED: envBoolean(false),
 
   // LiveKit (voice plane)
   LIVEKIT_URL: z.string().optional(),
