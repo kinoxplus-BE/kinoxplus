@@ -58,8 +58,13 @@ export class InvitedRoomDto {
   @ApiProperty({ example: 20 })
   maxMembers!: number;
 
-  @ApiProperty({ type: () => InvitedTitleDto })
-  title!: InvitedTitleDto;
+  @ApiProperty({
+    type: () => InvitedTitleDto,
+    nullable: true,
+    description:
+      'The currently-selected movie, or null if the room is in lobby mode with no movie picked yet. Host can pick or change via the title:change socket event.',
+  })
+  title!: InvitedTitleDto | null;
 
   @ApiProperty({ type: () => InvitedHostDto })
   host!: InvitedHostDto;

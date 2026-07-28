@@ -65,3 +65,8 @@ export class TransferHostDto extends RoomRefDto {
   @IsString()
   targetUserId!: string;
 }
+
+export class ChangeTitleDto extends RoomRefDto {
+  @IsString()
+  titleId!: string;
+}

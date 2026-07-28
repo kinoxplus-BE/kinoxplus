@@ -16,6 +16,7 @@ import type { JwtPayload } from '../../common/types';
 import { ChatService } from '../chat/chat.service';
 import { LivekitService } from '../livekit/livekit.service';
 import {
+  ChangeTitleDto,
   ChatSendDto,
   ControlDto,
   HeartbeatDto,
@@ -135,7 +136,8 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       const socketId = await this.rooms.getPresenceSocketId(event.userId);
       if (socketId) {
-        await this.server.in(socketId).socketsLeave(event.roomId);
+        // socketsLeave is fire-and-forget on the local namespace + adapter.
+        this.server.in(socketId).socketsLeave(event.roomId);
       }
 
       const currentPresenceRoomId = await this.rooms.getPresenceRoomId(
@@ -314,6 +316,46 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     );
     this.server.to(dto.roomId).emit('host:transferred', result);
     return result;
+  }
+
+  // ---------- Current title (movie in the room) ----------
+
+  /** Host picks a new movie OR swaps the current one mid-session. Playback
+   *  resets to 0 for everyone — the gateway broadcasts both the new title
+   *  and the reset state so clients can jump to it. */
+  @SubscribeMessage('title:change')
+  async onTitleChange(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: ChangeTitleDto,
+  ) {
+    const { room, state } = await this.rooms.changeTitle(
+      dto.roomId,
+      client.data.userId,
+      dto.titleId,
+    );
+    this.server.to(dto.roomId).emit('title:changed', {
+      title: room.title,
+      state: { ...state, serverTs: Date.now() },
+    });
+    return { title: room.title, state: { ...state, serverTs: Date.now() } };
+  }
+
+  /** Host drops the current movie back to lobby mode — chat/voice/video
+   *  keep running, but there's no playback until they pick a new title. */
+  @SubscribeMessage('title:clear')
+  async onTitleClear(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: RoomRefDto,
+  ) {
+    const { state } = await this.rooms.clearTitle(
+      dto.roomId,
+      client.data.userId,
+    );
+    this.server.to(dto.roomId).emit('title:changed', {
+      title: null,
+      state: { ...state, serverTs: Date.now() },
+    });
+    return { title: null, state: { ...state, serverTs: Date.now() } };
   }
 
   private broadcastState(

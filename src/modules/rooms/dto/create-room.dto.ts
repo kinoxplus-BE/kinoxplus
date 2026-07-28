@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
   IsInt,
@@ -9,12 +9,14 @@ import {
 } from 'class-validator';
 
 export class CreateRoomDto {
-  @ApiProperty({
+  @ApiPropertyOptional({
     example: 'cmd9x0abc0000v0f4title1234',
-    description: 'Catalog title id selected by the host.',
+    description:
+      'Catalog title id. Optional — omit to start the room in "lobby" mode with no movie picked. The host can pick or change the title later via the title:change socket event.',
   })
+  @IsOptional()
   @IsString()
-  titleId!: string;
+  titleId?: string;
 
   @ApiPropertyOptional({
     example: true,

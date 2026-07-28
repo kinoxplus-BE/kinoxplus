@@ -69,6 +69,8 @@ export class RoomInvitationsService {
     const room = await this.prisma.room.findUnique({
       where: { id: roomId },
       include: {
+        // Title is optional — the room can be in lobby mode with no movie
+        // selected. Copy adapts below.
         title: { select: { name: true } },
         host: { select: { displayName: true } },
       },
@@ -197,12 +199,18 @@ export class RoomInvitationsService {
 
     // Deliver: push to userId invitees, email to everyone.
     const joinUrl = `${this.webUrl}/join/${room.code}`;
+    // A title-less room is a valid "lobby" state — the invitation stays
+    // meaningful, but the copy has to drop the "watch X together" wording.
+    const titleName = room.title?.name ?? null;
     const emailPayload = {
       hostName: room.host.displayName,
-      titleName: room.title.name,
+      titleName: titleName ?? 'a movie together',
       roomCode: room.code,
       joinUrl,
     };
+    const pushBody = titleName
+      ? `Come watch ${titleName} together`
+      : `Jump in — they'll pick a movie soon`;
 
     for (const userId of userIdTargets) {
       const user = usersByEmail.find((u) => u.id === userId);
@@ -212,13 +220,13 @@ export class RoomInvitationsService {
           userId,
           {
             title: `${room.host.displayName} invited you to a Watch Room`,
-            body: `Come watch ${room.title.name} together`,
+            body: pushBody,
           },
           {
             kind: 'room_invite',
             roomId,
             roomCode: room.code,
-            titleName: room.title.name,
+            ...(titleName ? { titleName } : {}),
             hostName: room.host.displayName,
           },
         )

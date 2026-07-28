@@ -191,13 +191,17 @@ model GenreOnTitle {
 }
 
 // ---------- Watch Rooms (⭐ core) ----------
+// Rooms are persistent hangouts. The current title (movie) is optional and
+// swappable: a room can live in a title-less "lobby" state where members
+// chat / voice / video, then pick a title (title:change), watch, and change
+// again mid-session. Playback state resets to 0 on every title change.
 model Room {
   id         String     @id @default(cuid())
   code       String     @unique // shareable invite code
   hostId     String
   host       User       @relation("RoomHost", fields: [hostId], references: [id])
-  titleId    String
-  title      Title      @relation(fields: [titleId], references: [id])
+  titleId    String?
+  title      Title?     @relation(fields: [titleId], references: [id])
   status     RoomStatus @default(LOBBY)
   isPrivate  Boolean    @default(true)
   maxMembers Int        @default(20)

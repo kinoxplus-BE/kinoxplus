@@ -59,7 +59,7 @@ export class RoomsService {
   // ---------- Lifecycle ----------
   async createRoom(
     hostId: string,
-    titleId: string,
+    titleId: string | null | undefined,
     opts: { isPrivate?: boolean; maxMembers?: number; force?: boolean } = {},
   ) {
     // Enforcement: one active room per user (host or member). Without
@@ -73,14 +73,19 @@ export class RoomsService {
       'create-room',
     );
 
-    const title = await this.prisma.title.findUnique({
-      where: { id: titleId },
-    });
-    if (!title || title.status !== TitleStatus.READY) {
-      throw new NotFoundException({
-        code: 'TITLE_NOT_FOUND',
-        message: 'Title not found or not ready for playback.',
+    // Title is optional. Verify only if the caller picked one — a room
+    // created from the empty-lobby flow starts with no movie and picks
+    // one later via title:change.
+    if (titleId) {
+      const title = await this.prisma.title.findUnique({
+        where: { id: titleId },
       });
+      if (!title || title.status !== TitleStatus.READY) {
+        throw new NotFoundException({
+          code: 'TITLE_NOT_FOUND',
+          message: 'Title not found or not ready for playback.',
+        });
+      }
     }
 
     // Retry on the (unlikely) unique-code collision.
@@ -90,7 +95,7 @@ export class RoomsService {
           data: {
             code: this.generateCode(),
             hostId,
-            titleId,
+            titleId: titleId ?? null,
             isPrivate: opts.isPrivate ?? true,
             maxMembers: opts.maxMembers ?? 20,
             members: { create: { userId: hostId } },
@@ -105,6 +110,98 @@ export class RoomsService {
       code: 'ROOM_CODE_COLLISION',
       message: 'Could not allocate a room code, try again.',
     });
+  }
+
+  /**
+   * Host swaps (or picks the first) title for the room. Playback resets
+   * to positionSec 0 / not playing so the new movie starts from the top
+   * for everyone — different movies have different runtimes and edits,
+   * so preserving the old position would be nonsense.
+   *
+   * Returns { room, state } for the gateway to broadcast as `title:changed`.
+   */
+  async changeTitle(roomId: string, hostId: string, titleId: string) {
+    await this.assertHost(roomId, hostId);
+
+    const title = await this.prisma.title.findUnique({
+      where: { id: titleId },
+    });
+    if (!title || title.status !== TitleStatus.READY) {
+      throw new NotFoundException({
+        code: 'TITLE_NOT_FOUND',
+        message: 'Title not found or not ready for playback.',
+      });
+    }
+
+    const now = new Date();
+    const room = await this.prisma.room.update({
+      where: { id: roomId },
+      data: {
+        titleId,
+        positionSec: 0,
+        isPlaying: false,
+        lastSyncAt: now,
+        // Back to LOBBY until host taps play on the new movie.
+        status: RoomStatus.LOBBY,
+      },
+      include: { title: { select: { id: true, name: true, slug: true } } },
+    });
+
+    // Reset the cached playback state — Redis is a write-through mirror
+    // of Postgres for these fields, so overwrite explicitly.
+    const state: PlaybackState = {
+      positionSec: 0,
+      isPlaying: false,
+      lastSyncAt: now.getTime(),
+    };
+    await this.writeStateToRedis(roomId, state);
+
+    return { room, state };
+  }
+
+  /**
+   * Host drops the current title, dropping the room back to lobby mode.
+   * Nobody's kicked out — the room, chat, voice, and video keep running.
+   */
+  async clearTitle(roomId: string, hostId: string) {
+    await this.assertHost(roomId, hostId);
+
+    const now = new Date();
+    const room = await this.prisma.room.update({
+      where: { id: roomId },
+      data: {
+        titleId: null,
+        positionSec: 0,
+        isPlaying: false,
+        lastSyncAt: now,
+        status: RoomStatus.LOBBY,
+      },
+      include: { title: { select: { id: true, name: true, slug: true } } },
+    });
+
+    const state: PlaybackState = {
+      positionSec: 0,
+      isPlaying: false,
+      lastSyncAt: now.getTime(),
+    };
+    await this.writeStateToRedis(roomId, state);
+
+    return { room, state };
+  }
+
+  /** Playback control events require a title to actually be selected. */
+  private async assertHasTitle(roomId: string): Promise<void> {
+    const room = await this.prisma.room.findUnique({
+      where: { id: roomId },
+      select: { titleId: true },
+    });
+    if (!room || room.titleId === null) {
+      throw new BadRequestException({
+        code: 'NO_TITLE_SELECTED',
+        message:
+          'Pick a movie for the room before controlling playback (title:change).',
+      });
+    }
   }
 
   /**
@@ -486,6 +583,7 @@ export class RoomsService {
     positionSec: number,
     isPlaying: boolean,
   ): Promise<PlaybackState> {
+    await this.assertHasTitle(roomId);
     const state: PlaybackState = {
       positionSec,
       isPlaying,
@@ -506,6 +604,7 @@ export class RoomsService {
 
   /** ~2s authoritative host tick — Redis only, Postgres is flushed on control events. */
   async heartbeat(roomId: string, positionSec: number): Promise<PlaybackState> {
+    await this.assertHasTitle(roomId);
     const cached = await this.getState(roomId);
     const state: PlaybackState = {
       positionSec,
