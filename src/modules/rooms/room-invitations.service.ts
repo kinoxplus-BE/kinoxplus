@@ -80,6 +80,25 @@ export class RoomInvitationsService {
       });
     }
 
+    // Validate every provided userId exists. Without this, a bad id here
+    // would blow up inside the $transaction below with a cryptic Prisma
+    // P2003 (foreign key violation) — turn that into a clean 400.
+    if (userIds.length > 0) {
+      const existing = await this.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true },
+      });
+      if (existing.length !== userIds.length) {
+        const existingIds = new Set(existing.map((u) => u.id));
+        const missing = userIds.filter((id) => !existingIds.has(id));
+        throw new BadRequestException({
+          code: 'INVITEE_NOT_FOUND',
+          message: `Unknown userId(s): ${missing.join(', ')}`,
+          missingUserIds: missing,
+        });
+      }
+    }
+
     // Resolve emails → userId when the email is registered. Attached users
     // get the push+in-app path; unattached emails get the universal-link
     // email path only.
@@ -239,14 +258,24 @@ export class RoomInvitationsService {
   /**
    * Dashboard endpoint — every pending invitation for me whose room is
    * still active. Ordered newest-first.
+   *
+   * Also matches invitations addressed to my email (invitedEmail) with
+   * no invitedUserId yet — the case where a friend invited me by email
+   * BEFORE I had an account. Once I sign up with that email, those
+   * invitations start showing up automatically.
    */
-  listForUser(userId: string) {
+  async listForUser(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const emailFilter = user?.email ? [{ invitedEmail: user.email }] : [];
     return this.prisma.roomInvitation.findMany({
       where: {
-        invitedUserId: userId,
         status: InvitationStatus.PENDING,
         expiresAt: { gt: new Date() },
         room: { status: { not: RoomStatus.ENDED } },
+        OR: [{ invitedUserId: userId }, ...emailFilter],
       },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -285,11 +314,18 @@ export class RoomInvitationsService {
   }
 
   async decline(invitationId: string, userId: string): Promise<void> {
+    // Also allow declining email-only invitations that haven't been
+    // linked yet — the invitee owns the email and can act on them.
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const emailFilter = user?.email ? [{ invitedEmail: user.email }] : [];
     const result = await this.prisma.roomInvitation.updateMany({
       where: {
         id: invitationId,
-        invitedUserId: userId,
         status: InvitationStatus.PENDING,
+        OR: [{ invitedUserId: userId }, ...emailFilter],
       },
       data: { status: InvitationStatus.DECLINED },
     });

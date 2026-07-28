@@ -363,15 +363,31 @@ export class RoomsService {
     });
 
     // Mark any pending invitation for this user + room as accepted so it
-    // stops appearing on their dashboard.
-    await this.prisma.roomInvitation.updateMany({
+    // stops appearing on the dashboard. Matches both direct (invitedUserId)
+    // and email-only (invitedEmail) invitations.
+    const invitingUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const emailFilter = invitingUser?.email
+      ? [{ invitedEmail: invitingUser.email }]
+      : [];
+    // Two-step so we can also backfill invitedUserId on email-only invites
+    // (single source of truth for future lookups).
+    const invites = await this.prisma.roomInvitation.findMany({
       where: {
         roomId,
-        invitedUserId: userId,
         status: InvitationStatus.PENDING,
+        OR: [{ invitedUserId: userId }, ...emailFilter],
       },
-      data: { status: InvitationStatus.ACCEPTED },
+      select: { id: true, invitedUserId: true },
     });
+    if (invites.length > 0) {
+      await this.prisma.roomInvitation.updateMany({
+        where: { id: { in: invites.map((i) => i.id) } },
+        data: { status: InvitationStatus.ACCEPTED, invitedUserId: userId },
+      });
+    }
 
     await this.redis.client.sadd(this.membersKey(roomId), userId);
 
@@ -530,16 +546,26 @@ export class RoomsService {
     }
   }
 
+  /**
+   * True when the user has a pending invite to this room, whether the
+   * invite was targeted directly (invitedUserId) or by email (invitedEmail)
+   * before they had an account.
+   */
   private async hasPendingInvitationFor(
     roomId: string,
     userId: string,
   ): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    });
+    const emailFilter = user?.email ? [{ invitedEmail: user.email }] : [];
     const invitation = await this.prisma.roomInvitation.findFirst({
       where: {
         roomId,
-        invitedUserId: userId,
         status: InvitationStatus.PENDING,
         expiresAt: { gt: new Date() },
+        OR: [{ invitedUserId: userId }, ...emailFilter],
       },
       select: { id: true },
     });

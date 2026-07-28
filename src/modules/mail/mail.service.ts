@@ -7,6 +7,27 @@ interface SendMailOptions {
   html: string;
 }
 
+/** Escape user-controlled text before interpolating into HTML email bodies.
+ *  Prevents XSS via display names, movie titles, or other DB-sourced values
+ *  that could contain a literal `<script>` or attribute-breaking quotes. */
+function escapeHtml(input: string): string {
+  return input
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Escape a URL for safe use inside href="..." — only permits http(s). Any
+ *  other scheme is dropped to "#" so a poisoned upstream can't inject
+ *  javascript: or data: URLs into an email. */
+function escapeHref(url: string): string {
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return '#';
+  return escapeHtml(trimmed);
+}
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
@@ -115,6 +136,8 @@ export class MailService {
       joinUrl: string;
     },
   ): Promise<void> {
+    // Subject is plain text (Brevo doesn't render HTML in subjects), so
+    // escaping isn't strictly needed there — but keep it for consistency.
     await this.send({
       to,
       subject: `${payload.hostName} invited you to watch ${payload.titleName} on ${this.appName}`,
@@ -251,17 +274,23 @@ export class MailService {
     roomCode: string;
     joinUrl: string;
   }): string {
+    // All user-controlled inputs (hostName, titleName, roomCode) are HTML-
+    // escaped, and the joinUrl is scheme-guarded to prevent XSS.
+    const hostName = escapeHtml(payload.hostName);
+    const titleName = escapeHtml(payload.titleName);
+    const roomCode = escapeHtml(payload.roomCode);
+    const joinUrl = escapeHref(payload.joinUrl);
     return this.baseLayout(`
       <h2 style="margin:0 0 16px;color:#111827;font-size:22px;font-weight:600;">You're invited to a Watch Room</h2>
       <p style="margin:0 0 24px;color:#4b5563;font-size:16px;line-height:1.6;">
-        <strong>${payload.hostName}</strong> invited you to watch <strong>${payload.titleName}</strong> together on ${this.appName} — with voice chat, text chat, and perfectly synced playback.
+        <strong>${hostName}</strong> invited you to watch <strong>${titleName}</strong> together on ${this.appName} — with voice chat, text chat, and perfectly synced playback.
       </p>
       <div style="text-align:center;margin:0 0 24px;">
-        <a href="${payload.joinUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);color:#ffffff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:600;font-size:16px;">Join the room</a>
+        <a href="${joinUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);color:#ffffff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:600;font-size:16px;">Join the room</a>
       </div>
       <div style="background-color:#f3f4f6;border:2px dashed #d1d5db;border-radius:12px;padding:20px;text-align:center;margin:0 0 24px;">
         <p style="margin:0 0 8px;color:#6b7280;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Room code</p>
-        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:#111827;font-family:'Courier New',monospace;">${payload.roomCode}</span>
+        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:#111827;font-family:'Courier New',monospace;">${roomCode}</span>
       </div>
       <p style="margin:0;color:#6b7280;font-size:14px;line-height:1.6;">
         No app yet? The link above will get you set up in seconds.
