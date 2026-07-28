@@ -62,7 +62,8 @@ export class CatalogService {
     private readonly redis: RedisService,
     config: ConfigService,
   ) {
-    this.catalogCacheTtlSec = config.get<number>('CATALOG_CACHE_TTL_SEC') ?? 300;
+    this.catalogCacheTtlSec =
+      config.get<number>('CATALOG_CACHE_TTL_SEC') ?? 300;
     this.catalogCacheTimeoutMs =
       config.get<number>('CATALOG_CACHE_TIMEOUT_MS') ?? 150;
   }

@@ -223,7 +223,7 @@ export class CloudflareStreamService implements VideoProvider {
           signal: controller.signal,
           headers: {
             Authorization: `Bearer ${apiToken}`,
-            ...((init.headers as Record<string, string> | undefined) ?? {}),
+            ...(init.headers ?? {}),
           },
         });
 
