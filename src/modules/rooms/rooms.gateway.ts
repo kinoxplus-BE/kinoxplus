@@ -1,4 +1,5 @@
-import { UseFilters, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Logger, UseFilters, UsePipes, ValidationPipe } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import {
   ConnectedSocket,
@@ -24,6 +25,10 @@ import {
   RoomRefDto,
   TransferHostDto,
 } from './dto/room-events.dto';
+import {
+  ROOM_MEMBER_FORCE_LEFT_EVENT,
+  type RoomMemberForceLeftEvent,
+} from './rooms.events';
 import { RoomsService } from './rooms.service';
 
 interface RoomSocket extends Socket {
@@ -46,6 +51,8 @@ interface RoomSocket extends Socket {
 )
 @WebSocketGateway({ namespace: '/rooms', cors: true })
 export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  private readonly logger = new Logger(RoomsGateway.name);
+
   @WebSocketServer() server!: Namespace;
 
   constructor(
@@ -117,6 +124,31 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await this.rooms.clearPresence(userId);
     this.server.to(dto.roomId).emit('member:left', { userId });
     return { left: true };
+  }
+
+  @OnEvent(ROOM_MEMBER_FORCE_LEFT_EVENT)
+  async onMemberForceLeft(event: RoomMemberForceLeftEvent): Promise<void> {
+    try {
+      this.server.to(event.roomId).emit('member:left', {
+        userId: event.userId,
+      });
+
+      const socketId = await this.rooms.getPresenceSocketId(event.userId);
+      if (socketId) {
+        await this.server.in(socketId).socketsLeave(event.roomId);
+      }
+
+      const currentPresenceRoomId = await this.rooms.getPresenceRoomId(
+        event.userId,
+      );
+      if (currentPresenceRoomId === event.roomId) {
+        await this.rooms.clearPresence(event.userId);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to broadcast force-leave for ${event.userId} in ${event.roomId}: ${String(error)}`,
+      );
+    }
   }
 
   // ---------- Control plane (host only — asserted server-side) ----------

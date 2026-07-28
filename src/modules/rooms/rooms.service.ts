@@ -5,6 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomBytes } from 'node:crypto';
 import {
   InvitationStatus,
@@ -13,6 +14,10 @@ import {
 } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import {
+  ROOM_MEMBER_FORCE_LEFT_EVENT,
+  type RoomMemberForceLeftReason,
+} from './rooms.events';
 
 /** Authoritative playback state, cached in Redis for hot reads. */
 export interface PlaybackState {
@@ -37,6 +42,7 @@ export class RoomsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly events: EventEmitter2,
   ) {}
 
   // ---------- Redis keys (AGENTS.md §6) ----------
@@ -60,7 +66,12 @@ export class RoomsService {
     // `force`, we return 409 with the current room's info so the client
     // can prompt "Leave [current] and create new?". With `force=true`,
     // we auto-leave every other room first.
-    await this.enforceSingleRoomOrLeaveOthers(hostId, undefined, opts.force);
+    await this.enforceSingleRoomOrLeaveOthers(
+      hostId,
+      undefined,
+      opts.force,
+      'create-room',
+    );
 
     const title = await this.prisma.title.findUnique({
       where: { id: titleId },
@@ -106,6 +117,7 @@ export class RoomsService {
     userId: string,
     excludeRoomId: string | undefined,
     force: boolean | undefined,
+    reason: RoomMemberForceLeftReason,
   ): Promise<void> {
     const others = await this.prisma.roomMember.findMany({
       where: {
@@ -134,6 +146,11 @@ export class RoomsService {
     // Force-leave every other room.
     for (const other of others) {
       await this.leave(other.roomId, userId);
+      this.events.emit(ROOM_MEMBER_FORCE_LEFT_EVENT, {
+        roomId: other.roomId,
+        userId,
+        reason,
+      });
     }
   }
 
@@ -309,7 +326,12 @@ export class RoomsService {
     opts: { force?: boolean } = {},
   ) {
     // Users can only be in one active room at a time.
-    await this.enforceSingleRoomOrLeaveOthers(userId, roomId, opts.force);
+    await this.enforceSingleRoomOrLeaveOthers(
+      userId,
+      roomId,
+      opts.force,
+      'join-room',
+    );
 
     const room = await this.prisma.room.findUnique({
       where: { id: roomId },

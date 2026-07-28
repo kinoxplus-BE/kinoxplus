@@ -13,6 +13,7 @@ import {
 import {
   ApiBearerAuth,
   ApiOperation,
+  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -46,6 +47,13 @@ export class RoomsController {
     summary: 'Create a Watch Room',
     description:
       "Host is auto-added as the first member. A user can only be in one active room at a time: if you're already in another room, this returns 409 ALREADY_IN_ROOM with { currentRoomId, currentRoomCode }. Pass ?force=true to auto-leave the current room and create the new one.",
+  })
+  @ApiQuery({
+    name: 'force',
+    required: false,
+    type: Boolean,
+    description:
+      'When true, auto-leaves any other active room before creating this room. The old room receives member:left over Socket.io.',
   })
   @ApiResponse({ status: 201, description: 'Room created' })
   @ApiResponse({
