@@ -106,6 +106,22 @@ export class MailService {
     });
   }
 
+  async sendRoomInvitation(
+    to: string,
+    payload: {
+      hostName: string;
+      titleName: string;
+      roomCode: string;
+      joinUrl: string;
+    },
+  ): Promise<void> {
+    await this.send({
+      to,
+      subject: `${payload.hostName} invited you to watch ${payload.titleName} on ${this.appName}`,
+      html: this.roomInvitationTemplate(payload),
+    });
+  }
+
   private baseLayout(content: string): string {
     return `
 <!DOCTYPE html>
@@ -225,6 +241,30 @@ export class MailService {
       </p>
       <p style="margin:0;color:#ef4444;font-size:14px;font-weight:500;">
         If this wasn't you, reset your password immediately and contact support &mdash; someone may have access to your account.
+      </p>
+    `);
+  }
+
+  private roomInvitationTemplate(payload: {
+    hostName: string;
+    titleName: string;
+    roomCode: string;
+    joinUrl: string;
+  }): string {
+    return this.baseLayout(`
+      <h2 style="margin:0 0 16px;color:#111827;font-size:22px;font-weight:600;">You're invited to a Watch Room</h2>
+      <p style="margin:0 0 24px;color:#4b5563;font-size:16px;line-height:1.6;">
+        <strong>${payload.hostName}</strong> invited you to watch <strong>${payload.titleName}</strong> together on ${this.appName} — with voice chat, text chat, and perfectly synced playback.
+      </p>
+      <div style="text-align:center;margin:0 0 24px;">
+        <a href="${payload.joinUrl}" style="display:inline-block;background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);color:#ffffff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:600;font-size:16px;">Join the room</a>
+      </div>
+      <div style="background-color:#f3f4f6;border:2px dashed #d1d5db;border-radius:12px;padding:20px;text-align:center;margin:0 0 24px;">
+        <p style="margin:0 0 8px;color:#6b7280;font-size:12px;text-transform:uppercase;letter-spacing:1px;">Room code</p>
+        <span style="font-size:28px;font-weight:700;letter-spacing:6px;color:#111827;font-family:'Courier New',monospace;">${payload.roomCode}</span>
+      </div>
+      <p style="margin:0;color:#6b7280;font-size:14px;line-height:1.6;">
+        No app yet? The link above will get you set up in seconds.
       </p>
     `);
   }

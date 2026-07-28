@@ -50,6 +50,8 @@ model User {
   chatMessages  ChatMessage[]
   watchHistory  WatchHistory[]
   twoFactorBackupCodes TwoFactorBackupCode[]
+  invitesSent     RoomInvitation[] @relation("RoomInvitesSent")
+  invitesReceived RoomInvitation[] @relation("RoomInvitesReceived")
 
   @@index([role])
 }
@@ -206,11 +208,43 @@ model Room {
   createdAt   DateTime @default(now())
   endedAt     DateTime?
 
-  members  RoomMember[]
-  messages ChatMessage[]
+  members     RoomMember[]
+  messages    ChatMessage[]
+  invitations RoomInvitation[]
 
   @@index([hostId])
   @@index([status])
+}
+
+/// Invitation from a host to a specific user (invitedUserId) or an email
+/// address that may not have an account yet (invitedEmail). Powers the
+/// "you were invited" dashboard row and the join-by-link/email flow.
+model RoomInvitation {
+  id             String           @id @default(cuid())
+  roomId         String
+  room           Room             @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  // Exactly one of invitedUserId / invitedEmail is set per invitation:
+  // - invitedUserId when the invitee already has an account (push + in-app)
+  // - invitedEmail when they don't yet (email with universal link)
+  invitedUserId  String?
+  invitedUser    User?            @relation("RoomInvitesReceived", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  invitedEmail   String?
+  invitedById    String
+  invitedBy      User             @relation("RoomInvitesSent", fields: [invitedById], references: [id])
+  status         InvitationStatus @default(PENDING)
+  createdAt      DateTime         @default(now())
+  expiresAt      DateTime
+
+  @@index([invitedUserId, status])
+  @@index([invitedEmail, status])
+  @@index([roomId])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
 }
 
 enum RoomStatus {

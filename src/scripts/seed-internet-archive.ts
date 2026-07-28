@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import Redis from 'ioredis';
 import { unsafeContentReason } from '../common/content/content-safety';
-import { GENRES, type GenreName } from '../common/constants/genres';
+import { GENRES } from '../common/constants/genres';
 import {
   PrismaClient,
   TitleStatus,
@@ -67,7 +67,9 @@ const prisma = new PrismaClient({
 
 async function main(): Promise<void> {
   const titles = selectSeedTitles();
-  const archiveTmdbPoc = parseBoolean(process.env.ARCHIVE_SEED_ARCHIVE_TMDB_POC);
+  const archiveTmdbPoc = parseBoolean(
+    process.env.ARCHIVE_SEED_ARCHIVE_TMDB_POC,
+  );
 
   console.log(
     `Seeding ${titles.length} curated Internet Archive title(s) into catalog...`,
@@ -144,9 +146,7 @@ async function seedTitle(title: PublicDomainArchiveTitle): Promise<void> {
   const durationSec =
     playback.durationSec ?? parseDurationSec(firstString(metadata.runtime));
   const slug = slugify(title.name, title.year, title.identifier);
-  const genreNames = title.genres.filter((genre) =>
-    GENRES.includes(genre as GenreName),
-  );
+  const genreNames = title.genres.filter((genre) => GENRES.includes(genre));
 
   await prisma.title.upsert({
     where: { slug },
@@ -213,7 +213,7 @@ async function fetchArchiveMetadata(
     throw new Error('Internet Archive item was not found.');
   }
 
-  const metadata = body as ArchiveMetadataResponse;
+  const metadata = body;
   if (!metadata.files?.length) {
     throw new Error('Internet Archive item has no downloadable files.');
   }

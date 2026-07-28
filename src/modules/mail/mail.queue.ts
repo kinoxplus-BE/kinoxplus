@@ -12,7 +12,15 @@ export type MailJobData =
       purpose: 'signup' | 'verify' | 'reset' | 'login';
     }
   | { kind: 'password-changed'; to: string }
-  | { kind: 'all-sessions-revoked'; to: string };
+  | { kind: 'all-sessions-revoked'; to: string }
+  | {
+      kind: 'room-invitation';
+      to: string;
+      hostName: string;
+      titleName: string;
+      roomCode: string;
+      joinUrl: string;
+    };
 
 /**
  * Producer for the emails queue. Auth flows enqueue here instead of calling
@@ -50,6 +58,16 @@ export class MailQueue {
 
   async queueAllSessionsRevoked(to: string): Promise<void> {
     await this.add({ kind: 'all-sessions-revoked', to });
+  }
+
+  async queueRoomInvitation(payload: {
+    to: string;
+    hostName: string;
+    titleName: string;
+    roomCode: string;
+    joinUrl: string;
+  }): Promise<void> {
+    await this.add({ kind: 'room-invitation', ...payload });
   }
 
   private async add(data: MailJobData): Promise<void> {

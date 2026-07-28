@@ -1,6 +1,7 @@
 import {
   IsBoolean,
   IsNumber,
+  IsOptional,
   IsString,
   MaxLength,
   Min,
@@ -12,6 +13,20 @@ import {
 export class RoomRefDto {
   @IsString()
   roomId!: string;
+}
+
+export class JoinRoomDto extends RoomRefDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  @MaxLength(16)
+  code?: string;
+
+  /** If true, auto-leave any other active room this user is in. Without
+   * it, joining while already in another room returns ALREADY_IN_ROOM. */
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
 }
 
 export class ControlDto extends RoomRefDto {
@@ -39,4 +54,14 @@ export class MuteDto extends RoomRefDto {
 
   @IsBoolean()
   muted!: boolean;
+}
+
+export class KickMemberDto extends RoomRefDto {
+  @IsString()
+  targetUserId!: string;
+}
+
+export class TransferHostDto extends RoomRefDto {
+  @IsString()
+  targetUserId!: string;
 }

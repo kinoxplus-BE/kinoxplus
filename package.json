@@ -53,6 +53,7 @@
     "class-validator": "^0.15.1",
     "cloudinary": "^2.10.0",
     "dotenv": "^17.4.2",
+    "firebase-admin": "^14.2.0",
     "google-auth-library": "^10.9.0",
     "helmet": "^8.2.0",
     "ioredis": "^5.11.1",

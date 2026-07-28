@@ -1,14 +1,16 @@
 import { Module } from '@nestjs/common';
 import { ChatModule } from '../chat/chat.module';
 import { LivekitModule } from '../livekit/livekit.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { RoomInvitationsService } from './room-invitations.service';
 import { RoomsController } from './rooms.controller';
 import { RoomsGateway } from './rooms.gateway';
 import { RoomsService } from './rooms.service';
 
 @Module({
-  imports: [ChatModule, LivekitModule],
+  imports: [ChatModule, LivekitModule, NotificationsModule],
   controllers: [RoomsController],
-  providers: [RoomsService, RoomsGateway],
-  exports: [RoomsService],
+  providers: [RoomsService, RoomsGateway, RoomInvitationsService],
+  exports: [RoomsService, RoomInvitationsService],
 })
 export class RoomsModule {}

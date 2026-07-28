@@ -23,6 +23,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ApiEnvelope } from '../../common/swagger/api-envelope.decorator';
 import type { AuthUser } from '../../common/types';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RoomInvitationDto } from '../rooms/dto/invitation-responses.dto';
+import { RoomInvitationsService } from '../rooms/room-invitations.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { SessionDto } from './dto/session-responses.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -37,6 +39,7 @@ export class UsersController {
     private readonly users: UsersService,
     private readonly notifications: NotificationsService,
     private readonly sessions: SessionsService,
+    private readonly invitations: RoomInvitationsService,
   ) {}
 
   @Get('me')
@@ -147,5 +150,21 @@ export class UsersController {
   })
   revokeSession(@CurrentUser() user: AuthUser, @Param('id') sessionId: string) {
     return this.sessions.revoke(user.id, sessionId);
+  }
+
+  // ────────────────────── Invitations dashboard ──────────────────────
+
+  @Get('me/invitations')
+  @ApiOperation({
+    summary: 'List active Watch Room invitations for me',
+    description:
+      'Every pending invitation whose room is still active, newest first. Powers the "invited to a room" section of the dashboard. Excludes rooms that have ended, and invitations the user has already accepted or declined.',
+  })
+  @ApiEnvelope(RoomInvitationDto, {
+    isArray: true,
+    description: 'Pending invitations',
+  })
+  listInvitations(@CurrentUser() user: AuthUser) {
+    return this.invitations.listForUser(user.id);
   }
 }

@@ -18,8 +18,11 @@ import {
   ChatSendDto,
   ControlDto,
   HeartbeatDto,
+  JoinRoomDto,
+  KickMemberDto,
   MuteDto,
   RoomRefDto,
+  TransferHostDto,
 } from './dto/room-events.dto';
 import { RoomsService } from './rooms.service';
 
@@ -69,8 +72,14 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   async handleDisconnect(client: RoomSocket): Promise<void> {
-    if (client.data.userId) {
-      await this.rooms.clearPresence(client.data.userId);
+    const userId = client.data.userId;
+    if (!userId) return;
+    // Tell whichever room this socket was in that the member went offline.
+    // They're still a member (leftAt still null) — just not connected.
+    const roomId = await this.rooms.getPresenceRoomId(userId);
+    await this.rooms.clearPresence(userId);
+    if (roomId) {
+      this.server.to(roomId).emit('member:offline', { userId });
     }
   }
 
@@ -78,12 +87,14 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('room:join')
   async onJoin(
     @ConnectedSocket() client: RoomSocket,
-    @MessageBody() dto: RoomRefDto,
+    @MessageBody() dto: JoinRoomDto,
   ) {
     const userId = client.data.userId;
     const { room, member, state, members } = await this.rooms.join(
       dto.roomId,
       userId,
+      dto.code,
+      { force: dto.force },
     );
 
     await client.join(dto.roomId);
@@ -208,6 +219,69 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await this.rooms.endRoom(dto.roomId);
     this.server.to(dto.roomId).emit('room:ended', { roomId: dto.roomId });
     this.server.in(dto.roomId).socketsLeave(dto.roomId);
+  }
+
+  /** Host kicks a specific member. Target's socket is evicted immediately. */
+  @SubscribeMessage('member:kick')
+  async onKick(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: KickMemberDto,
+  ) {
+    await this.rooms.kickMember(
+      dto.roomId,
+      client.data.userId,
+      dto.targetUserId,
+    );
+    // Tell the room + tell the target directly, then evict their sockets.
+    this.server
+      .to(dto.roomId)
+      .emit('member:kicked', { userId: dto.targetUserId });
+    const targetSocketId = await this.rooms.getPresenceSocketId(
+      dto.targetUserId,
+    );
+    if (targetSocketId) {
+      const targetSocket = this.server.sockets.get(targetSocketId);
+      if (targetSocket) {
+        targetSocket.emit('you:kicked', { roomId: dto.roomId });
+        await targetSocket.leave(dto.roomId);
+      }
+    }
+    await this.rooms.clearPresence(dto.targetUserId);
+  }
+
+  /** Host mutes every non-host member at once. */
+  @SubscribeMessage('member:mute-all')
+  async onMuteAll(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: RoomRefDto,
+  ) {
+    const muted = await this.rooms.muteAll(dto.roomId, client.data.userId);
+    await Promise.all(
+      muted.map((userId) =>
+        this.livekit.setParticipantMuted(dto.roomId, userId, true),
+      ),
+    );
+    for (const userId of muted) {
+      this.server
+        .to(dto.roomId)
+        .emit('member:updated', { userId, isMuted: true });
+    }
+    return { muted: muted.length };
+  }
+
+  /** Host transfers ownership to another active member. */
+  @SubscribeMessage('host:transfer')
+  async onTransferHost(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: TransferHostDto,
+  ) {
+    const result = await this.rooms.transferHost(
+      dto.roomId,
+      client.data.userId,
+      dto.targetUserId,
+    );
+    this.server.to(dto.roomId).emit('host:transferred', result);
+    return result;
   }
 
   private broadcastState(

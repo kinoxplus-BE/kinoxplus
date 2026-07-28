@@ -42,6 +42,14 @@ export class MailProcessor extends WorkerHost {
       case 'all-sessions-revoked':
         await this.mail.sendAllSessionsRevoked(data.to);
         break;
+      case 'room-invitation':
+        await this.mail.sendRoomInvitation(data.to, {
+          hostName: data.hostName,
+          titleName: data.titleName,
+          roomCode: data.roomCode,
+          joinUrl: data.joinUrl,
+        });
+        break;
       default:
         this.logger.warn(`Unknown mail job: ${job.name}`);
     }
