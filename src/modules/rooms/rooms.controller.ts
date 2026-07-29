@@ -27,6 +27,7 @@ import { LivekitService } from '../livekit/livekit.service';
 import { CreateInvitationsDto } from './dto/create-invitations.dto';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { InvitationBatchResultDto } from './dto/invitation-responses.dto';
+import { VoiceTokenResponseDto } from './dto/room-responses.dto';
 import { RoomInvitationsService } from './room-invitations.service';
 import { RoomsService } from './rooms.service';
 
@@ -80,6 +81,17 @@ export class RoomsController {
 
   /** Voice-plane entry: LiveKit token for members of the room. */
   @Post(':id/voice-token')
+  @ApiOperation({
+    summary: 'Get LiveKit connection details for room audio/video',
+    description:
+      'Returns the LiveKit websocket URL, room name, and short-lived token for an active room member. Use the same token for audio calls and video calls.',
+  })
+  @ApiEnvelope(VoiceTokenResponseDto, {
+    status: 201,
+    description: 'LiveKit connection details',
+  })
+  @ApiResponse({ status: 403, description: 'ROOM_NOT_MEMBER' })
+  @ApiResponse({ status: 503, description: 'LIVEKIT_NOT_CONFIGURED' })
   async voiceToken(@CurrentUser() user: AuthUser, @Param('id') roomId: string) {
     await this.rooms.assertMember(roomId, user.id);
     let isHost = true;
@@ -89,7 +101,11 @@ export class RoomsController {
       isHost = false;
     }
     const token = await this.livekit.mintToken(roomId, user.id, isHost);
-    return { token, roomName: this.livekit.roomName(roomId) };
+    return {
+      token,
+      roomName: this.livekit.roomName(roomId),
+      livekitUrl: this.livekit.connectionUrl,
+    };
   }
 
   @Get(':id/messages')

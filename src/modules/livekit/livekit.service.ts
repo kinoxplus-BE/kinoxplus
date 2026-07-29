@@ -14,12 +14,14 @@ import { AccessToken, RoomServiceClient, TrackType } from 'livekit-server-sdk';
 @Injectable()
 export class LivekitService {
   private readonly logger = new Logger(LivekitService.name);
+  private readonly url?: string;
   private readonly apiKey?: string;
   private readonly apiSecret?: string;
   private readonly roomService?: RoomServiceClient;
 
   constructor(config: ConfigService) {
     const url = config.get<string>('LIVEKIT_URL');
+    this.url = url;
     this.apiKey = config.get<string>('LIVEKIT_API_KEY');
     this.apiSecret = config.get<string>('LIVEKIT_API_SECRET');
 
@@ -36,7 +38,17 @@ export class LivekitService {
   }
 
   get isConfigured(): boolean {
-    return this.roomService !== undefined;
+    return Boolean(this.url && this.apiKey && this.apiSecret);
+  }
+
+  get connectionUrl(): string {
+    if (!this.url) {
+      throw new ServiceUnavailableException({
+        code: 'LIVEKIT_NOT_CONFIGURED',
+        message: 'Voice is not available right now.',
+      });
+    }
+    return this.url;
   }
 
   roomName(roomId: string): string {
@@ -48,7 +60,7 @@ export class LivekitService {
     userId: string,
     isHost: boolean,
   ): Promise<string> {
-    if (!this.apiKey || !this.apiSecret) {
+    if (!this.isConfigured || !this.apiKey || !this.apiSecret) {
       throw new ServiceUnavailableException({
         code: 'LIVEKIT_NOT_CONFIGURED',
         message: 'Voice is not available right now.',

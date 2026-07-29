@@ -771,6 +771,180 @@ socket.on("chat:message", (message) => {
 
 Chat requires active room membership. It does not require a selected movie.
 
+## Live Chat, Audio Call, And Video Call Flow
+
+This is the exact flow the frontend should follow when building the social layer
+inside a Watch Room.
+
+### Step 1: Resolve Or Create The Room
+
+If user has a room code:
+
+```http
+GET /rooms/code/:code
+Authorization: Bearer <access_token>
+```
+
+If user is creating a new lobby room:
+
+```http
+POST /rooms
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "isPrivate": true,
+  "maxMembers": 20
+}
+```
+
+If user is creating a room from a movie page:
+
+```http
+POST /rooms
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "titleId": "<title_id>",
+  "isPrivate": true,
+  "maxMembers": 20
+}
+```
+
+### Step 2: Connect To Socket.io
+
+```ts
+const socket = io(`${API_URL}/rooms`, {
+  transports: ["websocket"],
+  auth: { token: accessToken }
+});
+```
+
+### Step 3: Join The Room
+
+By code:
+
+```ts
+socket.emit("room:join", { roomId, code }, onJoined);
+```
+
+By pending invite:
+
+```ts
+socket.emit("room:join", { roomId }, onJoined);
+```
+
+After `room:join` succeeds, the user is allowed to use live chat, audio, and
+video.
+
+### Step 4: Live Text Chat
+
+Fetch chat history:
+
+```http
+GET /rooms/:roomId/messages?limit=50&cursor=<optional>
+Authorization: Bearer <access_token>
+```
+
+Send chat message:
+
+```ts
+socket.emit("chat:send", {
+  roomId,
+  body: "Hello everyone"
+});
+```
+
+Receive chat message:
+
+```ts
+socket.on("chat:message", (message) => {
+  // { id, user, body, createdAt }
+});
+```
+
+### Step 5: Get LiveKit Details For Audio/Video
+
+Call this after `room:join` succeeds:
+
+```http
+POST /rooms/:roomId/voice-token
+Authorization: Bearer <access_token>
+```
+
+Response data:
+
+```json
+{
+  "token": "<livekit_token>",
+  "roomName": "kinoxplus-room-<room_id>",
+  "livekitUrl": "wss://your-project.livekit.cloud"
+}
+```
+
+The frontend should pass `livekitUrl` and `token` to the LiveKit client. The
+frontend should not hardcode LiveKit project URLs per environment.
+
+### Step 6: Audio Call
+
+Use the LiveKit client SDK:
+
+```ts
+await livekitRoom.connect(livekitUrl, token);
+await livekitRoom.localParticipant.setMicrophoneEnabled(true);
+```
+
+Render/subscribe to remote participant audio tracks through LiveKit SDK events.
+
+Host server-side audio mute:
+
+```ts
+socket.emit("member:mute", {
+  roomId,
+  targetUserId,
+  muted: true
+});
+```
+
+Host mute all:
+
+```ts
+socket.emit("member:mute-all", { roomId }, (response) => {
+  // { muted: number }
+});
+```
+
+Everyone should listen for mute state:
+
+```ts
+socket.on("member:updated", ({ userId, isMuted }) => {});
+```
+
+### Step 7: Video Call
+
+There is no separate backend endpoint for video. Use the same LiveKit response
+from:
+
+```http
+POST /rooms/:roomId/voice-token
+```
+
+The token allows publish and subscribe, so camera tracks are frontend-controlled:
+
+```ts
+await livekitRoom.connect(livekitUrl, token);
+await livekitRoom.localParticipant.setCameraEnabled(true);
+```
+
+Render/subscribe to remote participant video tracks through LiveKit SDK events.
+
+Current backend limitation:
+
+- `member:mute` and `member:mute-all` enforce audio mute only.
+- There is not yet a backend event for forcing a member's camera off.
+- Users can locally enable/disable camera from the frontend.
+
 ## Voice
 
 Get LiveKit token after joining the room:
@@ -785,11 +959,13 @@ Response data:
 ```json
 {
   "token": "<livekit_token>",
-  "roomName": "kinoxplus-room-<room_id>"
+  "roomName": "kinoxplus-room-<room_id>",
+  "livekitUrl": "wss://your-project.livekit.cloud"
 }
 ```
 
-Use this token with the LiveKit client SDK.
+Use `livekitUrl` and `token` with the LiveKit client SDK. This same endpoint is
+used for both audio calls and video calls.
 
 Important error:
 
