@@ -1,12 +1,55 @@
-# KinoX+ Watch Room Frontend Flow
+# KinoX+ Watch Room Frontend Integration Guide
 
-This is the implementation handoff for the frontend Watch Room feature. The backend separates the feature into three planes:
+This file is the frontend handoff for the current Watch Room implementation.
+It covers the HTTP APIs, Socket.io events, room lifecycle, lobby mode, current
+title swapping, playback sync, chat, voice, invitations, and moderation.
 
-- Playback plane: every client streams the HLS video directly from the playback URL.
-- Control plane: Socket.io sync events keep everyone at the same play/pause/seek position.
-- Voice plane: LiveKit handles room voice; the backend only mints room-scoped tokens.
+Swagger is available at:
 
-HTTP responses use the global envelope:
+```http
+GET /api/docs
+```
+
+Swagger documents HTTP endpoints only. Socket.io events are documented in this
+file.
+
+## Core Model
+
+A Watch Room is a persistent hangout. A room can exist with or without a movie.
+
+- Room exists first.
+- Members join the room.
+- Chat and LiveKit voice work even when no movie is selected.
+- The host can pick, change, or clear the current movie.
+- Video playback is never streamed through the backend.
+- Each client gets its own HLS playback URL and streams directly from the video provider/CDN.
+- Socket.io only carries room control events, chat, and member updates.
+
+Current title states:
+
+- `room.title === null`: lobby mode, no movie picked.
+- `room.title !== null`: a movie is selected and clients may fetch playback.
+
+Playback controls are valid only when a title is selected. If the frontend sends
+playback control events while the room has no title, the backend emits:
+
+```json
+{
+  "code": "NO_TITLE_SELECTED",
+  "message": "Pick a movie for the room before controlling playback (title:change)."
+}
+```
+
+## Auth And Envelopes
+
+Catalog browsing is public. Room, user, streaming, voice, and invitation APIs
+require:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+HTTP success responses use:
 
 ```json
 {
@@ -23,64 +66,133 @@ HTTP errors use:
   "success": false,
   "error": {
     "code": "ERROR_CODE",
-    "message": "Human readable message."
+    "message": "Readable message"
   }
 }
 ```
 
-Socket errors are emitted as:
+Socket errors are emitted on the `error` event:
 
 ```json
 {
   "code": "ERROR_CODE",
-  "message": "Human readable message."
+  "message": "Readable message"
 }
 ```
 
-All room HTTP endpoints require:
+## Public Catalog Flow
+
+Use the catalog to show movies the host can pick before or inside a room.
+
+Home rows:
 
 ```http
-Authorization: Bearer <access_token>
+GET /catalog/home?limitPerGenre=10
 ```
 
-## Current Backend Behavior
-
-Users can only be active in one non-ended room at a time.
-
-If the user is already in another room and tries to create or join a different room without `force=true`, the backend returns `ALREADY_IN_ROOM`.
-
-If the user passes `force=true`, the backend marks them left in their old room first. The event-emitter fix now broadcasts this to the old room over Socket.io:
-
-```ts
-member:left -> { userId }
-```
-
-The gateway also removes the user's socket from the old Socket.io room, so the old live member list no longer stays stale.
-
-## 1. Browse Titles
-
-Use the catalog to let the host pick something to watch.
-
-```http
-GET /catalog/home
-```
-
-or:
+List titles:
 
 ```http
 GET /catalog/titles?limit=20&cursor=<optional>&genre=<optional>
 ```
 
-Use only titles returned by these endpoints. Room creation requires the title to be `READY`.
+Title detail by slug:
 
-## 2. Create A Room
+```http
+GET /catalog/titles/:slug
+```
 
-Host creates the room:
+Genre list:
+
+```http
+GET /catalog/genres
+```
+
+Only use catalog titles with `status: "READY"` for room title selection. The
+backend also validates this on room create and `title:change`.
+
+## Main User Flows
+
+### Flow A: Empty Lobby First
+
+Use this when the host wants to invite friends before choosing a movie.
+
+1. Host creates a room without `titleId`.
+2. Host invites friends or shares the room code.
+3. Members join the room.
+4. Chat and voice can begin.
+5. Host opens catalog picker.
+6. Host emits `title:change`.
+7. Everyone receives `title:changed`.
+8. Each client fetches the playback URL for the new title.
+9. Host presses play.
+
+### Flow B: Room From Movie Page
+
+Use this when the host starts from a movie detail page.
+
+1. Host selects a movie.
+2. Host creates a room with `titleId`.
+3. Members join.
+4. Each client fetches playback for that title.
+5. Host controls playback.
+
+### Flow C: Invite Mid-Watch
+
+Use this when a room is already active.
+
+1. Host invites users or shares code.
+2. New user resolves code or opens invitation.
+3. New user joins via socket.
+4. Join response includes current playback state.
+5. New user fetches playback for `room.title.id`.
+6. New user seeks to the current synced position.
+
+### Flow D: Change Movie Mid-Session
+
+Use this when the host swaps the current movie while everyone stays in the room.
+
+1. Host opens catalog picker.
+2. Host emits `title:change`.
+3. Backend verifies host and title readiness.
+4. Backend sets `positionSec = 0`, `isPlaying = false`, and `status = "LOBBY"`.
+5. Everyone receives `title:changed`.
+6. Clients stop old playback, fetch the new playback URL, load the new source,
+   and seek to 0.
+7. Host presses play again.
+
+### Flow E: Clear Movie Back To Lobby
+
+Use this when the host removes the current movie.
+
+1. Host emits `title:clear`.
+2. Backend clears `room.titleId`.
+3. Playback resets to 0 and paused.
+4. Everyone receives `title:changed` with `title: null`.
+5. Clients unload/hide the video player and show lobby UI.
+
+## Create Room
+
+Endpoint:
 
 ```http
 POST /rooms
 Content-Type: application/json
+Authorization: Bearer <access_token>
+```
 
+Create empty lobby:
+
+```json
+{
+  "isPrivate": true,
+  "maxMembers": 20
+}
+```
+
+Create room with pre-selected movie:
+
+```json
 {
   "titleId": "<title_id>",
   "isPrivate": true,
@@ -88,20 +200,36 @@ Content-Type: application/json
 }
 ```
 
-If the user might already be in another room, call:
+If the user may already be in another active room, use:
 
 ```http
 POST /rooms?force=true
-Content-Type: application/json
+```
 
+`force=true` auto-leaves any other active room first. The old room receives:
+
+```ts
+member:left -> { userId }
+```
+
+Example response data for empty lobby:
+
+```json
 {
-  "titleId": "<title_id>",
+  "id": "<room_id>",
+  "code": "Q7M4RD",
+  "hostId": "<host_user_id>",
+  "titleId": null,
+  "status": "LOBBY",
   "isPrivate": true,
-  "maxMembers": 20
+  "maxMembers": 20,
+  "positionSec": 0,
+  "isPlaying": false,
+  "title": null
 }
 ```
 
-Expected response data:
+Example response data with a selected movie:
 
 ```json
 {
@@ -124,31 +252,23 @@ Expected response data:
 
 Important errors:
 
-```json
-{ "code": "TITLE_NOT_FOUND", "message": "Title not found or not ready for playback." }
-{ "code": "ALREADY_IN_ROOM", "message": "You're already in a room (...). Leave it first or pass force=true to auto-leave." }
-```
-
-If `ALREADY_IN_ROOM` happens, show a confirmation modal like:
-
 ```text
-You are already in another Watch Room. Leave it and continue?
+TITLE_NOT_FOUND
+ALREADY_IN_ROOM
 ```
 
-On confirm, retry with `?force=true`.
+Frontend behavior for `ALREADY_IN_ROOM`:
 
-## 3. Share Or Resolve An Invite Code
+1. Show a confirmation prompt.
+2. If user confirms, retry the same action with `force=true`.
 
-Room creation returns `code`. Use it for share links, for example:
+## Resolve Room Code
 
-```text
-https://your-frontend.com/join/Q7M4RD
-```
-
-When a guest opens a code/link:
+Use this when a user opens `/join/:code` or enters a code manually.
 
 ```http
 GET /rooms/code/:code
+Authorization: Bearer <access_token>
 ```
 
 Example:
@@ -157,7 +277,22 @@ Example:
 GET /rooms/code/Q7M4RD
 ```
 
-Expected response data:
+Response data:
+
+```json
+{
+  "id": "<room_id>",
+  "code": "Q7M4RD",
+  "hostId": "<host_user_id>",
+  "titleId": null,
+  "status": "LOBBY",
+  "isPrivate": true,
+  "maxMembers": 20,
+  "title": null
+}
+```
+
+or, if a movie is selected:
 
 ```json
 {
@@ -165,7 +300,7 @@ Expected response data:
   "code": "Q7M4RD",
   "hostId": "<host_user_id>",
   "titleId": "<title_id>",
-  "status": "LOBBY",
+  "status": "PLAYING",
   "isPrivate": true,
   "maxMembers": 20,
   "title": {
@@ -176,9 +311,10 @@ Expected response data:
 }
 ```
 
-This endpoint only resolves the room. The user is not a live member until the socket `room:join` succeeds.
+Resolving a code does not make the user a live member. They must still connect
+to the socket and emit `room:join`.
 
-## 4. Connect To The Room Socket
+## Socket Connection
 
 Namespace:
 
@@ -186,18 +322,18 @@ Namespace:
 /rooms
 ```
 
-Connect with the access token:
+Connection:
 
 ```ts
 import { io } from "socket.io-client";
 
 const socket = io(`${API_URL}/rooms`, {
   transports: ["websocket"],
-  auth: { token: accessToken },
+  auth: { token: accessToken }
 });
 ```
 
-Listen for auth or validation errors:
+Listen for errors:
 
 ```ts
 socket.on("error", (error) => {
@@ -205,19 +341,49 @@ socket.on("error", (error) => {
 });
 ```
 
-## 5. Join The Room
+Common error codes:
+
+```text
+UNAUTHORIZED
+TOKEN_INVALID
+ROOM_NOT_FOUND
+ROOM_NOT_MEMBER
+ROOM_NOT_HOST
+ROOM_INVITE_REQUIRED
+ROOM_FULL
+ALREADY_IN_ROOM
+TITLE_NOT_FOUND
+NO_TITLE_SELECTED
+MEMBER_NOT_FOUND
+CANNOT_KICK_HOST
+ALREADY_HOST
+```
+
+## Join Room
+
+Event:
+
+```ts
+room:join
+```
+
+Payload shape:
+
+```ts
+{
+  roomId: string;
+  code?: string;
+  force?: boolean;
+}
+```
 
 Host or active member reconnect:
 
 ```ts
-socket.emit("room:join", { roomId }, (response) => {
-  // response.room
-  // response.state
-  // response.members
-});
+socket.emit("room:join", { roomId }, onJoined);
 ```
 
-Guest joining by invite code:
+Guest joining private room by code:
 
 ```ts
 socket.emit(
@@ -226,19 +392,19 @@ socket.emit(
     roomId,
     code: "Q7M4RD"
   },
-  (response) => {
-    // Use response.state to sync initial playback.
-  }
+  onJoined
 );
 ```
 
-User accepting an in-app pending invitation can join without the code:
+Accepting an in-app invitation:
 
 ```ts
 socket.emit("room:join", { roomId }, onJoined);
 ```
 
-If the user might already be in another room:
+The backend accepts this without `code` if the user has a pending invitation.
+
+Joining while already in another room:
 
 ```ts
 socket.emit(
@@ -252,7 +418,7 @@ socket.emit(
 );
 ```
 
-Expected join response:
+Join response:
 
 ```json
 {
@@ -260,15 +426,11 @@ Expected join response:
     "id": "<room_id>",
     "code": "Q7M4RD",
     "hostId": "<host_user_id>",
-    "titleId": "<title_id>",
+    "titleId": null,
     "status": "LOBBY",
     "isPrivate": true,
     "maxMembers": 20,
-    "title": {
-      "id": "<title_id>",
-      "name": "Movie Name",
-      "slug": "movie-name"
-    }
+    "title": null
   },
   "state": {
     "positionSec": 0,
@@ -282,7 +444,7 @@ Expected join response:
       "roomId": "<room_id>",
       "userId": "<user_id>",
       "isMuted": false,
-      "joinedAt": "2026-07-28T12:00:00.000Z",
+      "joinedAt": "2026-07-29T12:00:00.000Z",
       "leftAt": null,
       "user": {
         "id": "<user_id>",
@@ -294,30 +456,132 @@ Expected join response:
 }
 ```
 
-Important socket error codes:
+Frontend after join:
 
-```text
-ROOM_INVITE_REQUIRED
-ALREADY_IN_ROOM
-ROOM_FULL
-ROOM_NOT_FOUND
-```
+1. Store `room`, `state`, and `members`.
+2. If `room.title === null`, show lobby UI and do not fetch playback.
+3. If `room.title !== null`, fetch playback for `room.title.id`.
+4. Apply `state` to the video player.
 
 Private room access rules:
 
-- A new guest needs the correct invite code, or a pending invitation.
-- The host can join without a code.
-- An already-active member can reconnect without a code.
+- New guest needs correct invite code or pending invitation.
+- Host can join without code.
+- Already-active member can reconnect without code.
 
-## 6. Get The Playback URL
+## Current Title Events
 
-After the room is resolved or joined, fetch the title playback URL:
+### Pick Or Change Title
+
+Host-only event:
+
+```ts
+socket.emit(
+  "title:change",
+  {
+    roomId,
+    titleId
+  },
+  (response) => {
+    // response.title
+    // response.state
+  }
+);
+```
+
+Backend behavior:
+
+- Verifies caller is host.
+- Verifies title exists and is `READY`.
+- Sets room `titleId`.
+- Resets `positionSec` to 0.
+- Sets `isPlaying` to false.
+- Sets status back to `LOBBY`.
+- Broadcasts `title:changed`.
+
+Broadcast:
+
+```ts
+socket.on("title:changed", ({ title, state }) => {
+  // title is { id, name, slug } or null
+  // state is reset playback state with serverTs
+});
+```
+
+Example payload:
+
+```json
+{
+  "title": {
+    "id": "<title_id>",
+    "name": "Movie Name",
+    "slug": "movie-name"
+  },
+  "state": {
+    "positionSec": 0,
+    "isPlaying": false,
+    "lastSyncAt": 1780000000000,
+    "serverTs": 1780000000000
+  }
+}
+```
+
+Client reaction:
+
+1. Stop old playback.
+2. Set current room title to `title`.
+3. Fetch `GET /streaming/titles/:titleId/playback`.
+4. Load the new playback URL.
+5. Seek to `state.positionSec`.
+6. Keep paused until host sends `control:play`.
+
+### Clear Title
+
+Host-only event:
+
+```ts
+socket.emit(
+  "title:clear",
+  { roomId },
+  (response) => {
+    // response.title === null
+    // response.state.positionSec === 0
+  }
+);
+```
+
+Broadcast:
+
+```json
+{
+  "title": null,
+  "state": {
+    "positionSec": 0,
+    "isPlaying": false,
+    "lastSyncAt": 1780000000000,
+    "serverTs": 1780000000000
+  }
+}
+```
+
+Client reaction:
+
+1. Stop and unload current video.
+2. Set `room.title = null`.
+3. Hide playback controls.
+4. Show lobby UI.
+5. Keep chat and voice connected.
+
+## Playback URL
+
+Only call this when a title is selected.
 
 ```http
 GET /streaming/titles/:titleId/playback
+Authorization: Bearer <access_token>
 ```
 
-Expected response data:
+Response data for demo/POC titles:
 
 ```json
 {
@@ -326,7 +590,7 @@ Expected response data:
 }
 ```
 
-or:
+Response data for Cloudflare Stream titles:
 
 ```json
 {
@@ -335,38 +599,47 @@ or:
 }
 ```
 
-Use the returned URL in the app video player. The backend does not proxy the video stream.
-
-Possible errors:
+Important errors:
 
 ```text
 TITLE_NOT_PLAYABLE
 SUBSCRIPTION_REQUIRED
 ```
 
-## 7. Initial Playback Sync
+Client rule:
 
-When `room:join` succeeds, immediately sync the local video player to the returned state:
+- If `room.title === null`, do not call playback.
+- If `title:changed` provides a title, call playback for that title.
+- If `title:changed` provides `null`, unload playback.
+
+## Initial Playback Sync
+
+Use this after `room:join` or after `title:changed`.
 
 ```ts
-function expectedPosition(state) {
+function getExpectedPosition(state: {
+  positionSec: number;
+  isPlaying: boolean;
+  serverTs: number;
+}) {
   if (!state.isPlaying) return state.positionSec;
   return state.positionSec + (Date.now() - state.serverTs) / 1000;
 }
 
-const position = expectedPosition(response.state);
-video.currentTime = position;
+async function applyPlaybackState(video: HTMLVideoElement, state) {
+  video.currentTime = getExpectedPosition(state);
 
-if (response.state.isPlaying) {
-  await video.play();
-} else {
-  video.pause();
+  if (state.isPlaying) {
+    await video.play();
+  } else {
+    video.pause();
+  }
 }
 ```
 
-## 8. Host Playback Controls
+## Host Playback Controls
 
-Only the host should show active play/pause/seek controls. The backend still enforces host-only authority.
+Show these controls only for the host and only when `room.title !== null`.
 
 Play:
 
@@ -395,10 +668,12 @@ socket.emit("control:seek", {
 });
 ```
 
-Heartbeat every about 2 seconds while the host is in the room:
+Heartbeat every about 2 seconds while host is present and a title is selected:
 
 ```ts
-setInterval(() => {
+const heartbeatTimer = setInterval(() => {
+  if (!isHost || !room.title) return;
+
   socket.emit("control:heartbeat", {
     roomId,
     positionSec: video.currentTime,
@@ -407,12 +682,14 @@ setInterval(() => {
 }, 2000);
 ```
 
-All clients listen for:
+All clients listen for sync state:
 
 ```ts
-socket.on("sync:state", (state) => {
-  const expected =
-    state.positionSec + (state.isPlaying ? (Date.now() - state.serverTs) / 1000 : 0);
+socket.on("sync:state", async (state) => {
+  if (!room.title) return;
+
+  const expected = state.positionSec +
+    (state.isPlaying ? (Date.now() - state.serverTs) / 1000 : 0);
 
   const drift = Math.abs(video.currentTime - expected);
   if (drift > 1.5) {
@@ -420,18 +697,22 @@ socket.on("sync:state", (state) => {
   }
 
   if (state.isPlaying) {
-    video.play();
+    await video.play();
   } else {
     video.pause();
   }
 });
 ```
 
-The frontend can later improve this with playbackRate nudging for small drift.
+Small drift improvement:
 
-## 9. Member List Events
+- If drift is less than or equal to 1.5 seconds, optionally nudge playbackRate
+  between `0.95` and `1.05` until the client converges.
+- Reset playbackRate to `1` once synced.
 
-Maintain the live member list from these socket events:
+## Member Events
+
+Maintain the live member list with these events:
 
 ```ts
 socket.on("member:joined", ({ user }) => {});
@@ -439,33 +720,39 @@ socket.on("member:left", ({ userId }) => {});
 socket.on("member:offline", ({ userId }) => {});
 socket.on("member:updated", ({ userId, isMuted }) => {});
 socket.on("member:kicked", ({ userId }) => {});
+socket.on("you:kicked", ({ roomId }) => {});
 socket.on("host:transferred", ({ oldHostId, newHostId }) => {});
 socket.on("room:ended", ({ roomId }) => {});
 ```
 
 Meaning:
 
-- `member:left`: remove the user from the active member list.
-- `member:offline`: show disconnected/offline, but do not remove membership.
+- `member:joined`: add or mark member online.
+- `member:left`: remove user from active member list.
+- `member:offline`: show offline/disconnected but do not remove membership.
 - `member:updated`: update mute state.
-- `member:kicked`: remove user from the active member list.
-- `room:ended`: close the room UI and navigate away.
+- `member:kicked`: remove target user from active members.
+- `you:kicked`: current user was kicked; leave room UI immediately.
+- `host:transferred`: update host controls.
+- `room:ended`: close room UI and navigate away.
 
 Force-leave behavior:
 
-- If user A is in Room X and joins or creates Room Y with `force=true`, Room X receives `member:left` for user A immediately.
-- User A's socket is removed from Room X by the gateway.
-- Room Y then receives `member:joined` when user A joins Room Y.
+- If user A is in Room X and joins/creates Room Y with `force=true`, Room X
+  receives `member:left` for user A.
+- The gateway removes A's socket from Room X.
+- Room Y receives `member:joined` when A joins Room Y.
 
-## 10. Chat
+## Chat
 
-Load history:
+Load message history:
 
 ```http
 GET /rooms/:roomId/messages?limit=50&cursor=<optional>
+Authorization: Bearer <access_token>
 ```
 
-Send:
+Send message:
 
 ```ts
 socket.emit("chat:send", {
@@ -474,7 +761,7 @@ socket.emit("chat:send", {
 });
 ```
 
-Receive:
+Receive message:
 
 ```ts
 socket.on("chat:message", (message) => {
@@ -482,15 +769,18 @@ socket.on("chat:message", (message) => {
 });
 ```
 
-## 11. Voice
+Chat requires active room membership. It does not require a selected movie.
 
-After joining the room:
+## Voice
+
+Get LiveKit token after joining the room:
 
 ```http
 POST /rooms/:roomId/voice-token
+Authorization: Bearer <access_token>
 ```
 
-Expected response data:
+Response data:
 
 ```json
 {
@@ -499,17 +789,104 @@ Expected response data:
 }
 ```
 
-Use the token with the LiveKit client SDK.
+Use this token with the LiveKit client SDK.
 
-If LiveKit env vars are not configured, this endpoint returns:
+Important error:
 
 ```text
 LIVEKIT_NOT_CONFIGURED
 ```
 
-## 12. Host Moderation
+Voice works in lobby mode. It does not require a selected movie.
 
-Mute/unmute one member:
+## Invitations
+
+Host invites users by email or user id:
+
+```http
+POST /rooms/:roomId/invitations
+Content-Type: application/json
+Authorization: Bearer <access_token>
+
+{
+  "emails": ["friend@example.com"],
+  "userIds": ["<user_id>"]
+}
+```
+
+Response data:
+
+```json
+{
+  "invited": 1,
+  "skippedAlreadyMembers": 0,
+  "skippedAlreadyInvited": 0
+}
+```
+
+Notes:
+
+- Max 20 invitees per request.
+- Duplicates against pending invites are skipped.
+- Existing members are skipped.
+- A lobby room invitation is valid even when `room.title` is null.
+
+Invitee dashboard:
+
+```http
+GET /users/me/invitations
+Authorization: Bearer <access_token>
+```
+
+Response rows include:
+
+```json
+{
+  "id": "<invitation_id>",
+  "createdAt": "2026-07-29T12:00:00.000Z",
+  "expiresAt": "2026-07-30T12:00:00.000Z",
+  "room": {
+    "id": "<room_id>",
+    "code": "Q7M4RD",
+    "status": "LOBBY",
+    "isPrivate": true,
+    "maxMembers": 20,
+    "title": null,
+    "host": {
+      "id": "<host_user_id>",
+      "displayName": "Ada",
+      "username": "ada",
+      "avatarUrl": null,
+      "avatarColor": "#3652D9"
+    }
+  }
+}
+```
+
+If `room.title` is null, render a lobby invitation state such as:
+
+```text
+Ada invited you to a Watch Room. No movie picked yet.
+```
+
+Decline invitation:
+
+```http
+DELETE /rooms/:roomId/invitations/:invitationId
+Authorization: Bearer <access_token>
+```
+
+Accept invitation:
+
+```ts
+socket.emit("room:join", { roomId }, onJoined);
+```
+
+No invite code is required if the user has a pending invitation.
+
+## Host Moderation
+
+Mute or unmute one member:
 
 ```ts
 socket.emit("member:mute", {
@@ -517,6 +894,12 @@ socket.emit("member:mute", {
   targetUserId,
   muted: true
 });
+```
+
+Room receives:
+
+```ts
+member:updated -> { userId: targetUserId, isMuted: true }
 ```
 
 Mute all non-host members:
@@ -527,7 +910,7 @@ socket.emit("member:mute-all", { roomId }, (response) => {
 });
 ```
 
-Kick a member:
+Kick member:
 
 ```ts
 socket.emit("member:kick", {
@@ -536,13 +919,13 @@ socket.emit("member:kick", {
 });
 ```
 
-The room receives:
+Room receives:
 
 ```ts
 member:kicked -> { userId: targetUserId }
 ```
 
-The kicked user receives:
+Kicked user receives:
 
 ```ts
 you:kicked -> { roomId }
@@ -557,57 +940,15 @@ socket.emit("host:transfer", {
 });
 ```
 
-The room receives:
+Room receives:
 
 ```ts
 host:transferred -> { oldHostId, newHostId }
 ```
 
-## 13. Invitations
+Moderation works in lobby mode. It does not require a selected movie.
 
-Host invites by email or user id:
-
-```http
-POST /rooms/:roomId/invitations
-Content-Type: application/json
-
-{
-  "emails": ["friend@example.com"],
-  "userIds": ["<user_id>"]
-}
-```
-
-Expected response data:
-
-```json
-{
-  "invited": 1,
-  "skippedAlreadyMembers": 0,
-  "skippedAlreadyInvited": 0
-}
-```
-
-Invitee dashboard:
-
-```http
-GET /users/me/invitations
-```
-
-Decline invitation:
-
-```http
-DELETE /rooms/:roomId/invitations/:invitationId
-```
-
-Accept invitation:
-
-```ts
-socket.emit("room:join", { roomId }, onJoined);
-```
-
-The backend accepts this without an invite code if the user has a pending invitation for that room.
-
-## 14. Leave Or End Room
+## Leave And End Room
 
 User leaves:
 
@@ -617,13 +958,13 @@ socket.emit("room:leave", { roomId }, (response) => {
 });
 ```
 
-Everyone else receives:
+Others receive:
 
 ```ts
 member:left -> { userId }
 ```
 
-Host ends the room:
+Host ends room:
 
 ```ts
 socket.emit("room:end", { roomId });
@@ -635,42 +976,167 @@ Everyone receives:
 room:ended -> { roomId }
 ```
 
-## 15. Recommended Frontend Implementation Order
+When a room ends:
 
-1. Build the room create screen from catalog title detail.
-2. On `ALREADY_IN_ROOM`, show confirm and retry with `force=true`.
-3. Build join-by-code route: `/join/:code` calls `GET /rooms/code/:code`.
-4. Connect to `/rooms` socket with JWT.
-5. Emit `room:join` with `{ roomId, code }`.
-6. Fetch playback URL and mount the player.
-7. Apply returned `state` before rendering playback controls.
-8. Add host-only controls and heartbeat.
-9. Add member list listeners.
-10. Add chat.
-11. Add LiveKit voice token and voice UI.
-12. Add invite dashboard and host invite UI.
-13. Add moderation: mute, mute-all, kick, transfer host, end room.
+- Room status becomes `ENDED`.
+- Pending invitations expire.
+- Socket.io room membership is cleared.
+- Clients should close the room screen.
 
-## 16. Swagger Coverage
+## UI State Machine
 
-Swagger is available at:
+Recommended room UI states:
 
-```http
-GET /api/docs
+### Loading
+
+- Resolve code or use known room id.
+- Connect socket.
+- Emit `room:join`.
+
+### Lobby No Title
+
+Condition:
+
+```ts
+room.title === null
 ```
 
-Swagger covers the HTTP endpoints:
+Show:
+
+- Member list
+- Chat
+- Voice controls
+- Invite button
+- Host movie picker
+
+Hide:
+
+- Video player
+- Play/pause/seek controls
+- Playback URL fetch
+
+### Title Selected But Paused
+
+Condition:
+
+```ts
+room.title !== null && state.isPlaying === false
+```
+
+Show:
+
+- Video player loaded with playback URL
+- Waiting/play prompt
+- Host controls if current user is host
+
+### Playing
+
+Condition:
+
+```ts
+room.title !== null && state.isPlaying === true
+```
+
+Show:
+
+- Video player
+- Synced playback state
+- Host controls if current user is host
+
+### Ended Or Kicked
+
+Condition:
+
+```ts
+room:ended received
+```
+
+or:
+
+```ts
+you:kicked received
+```
+
+Navigate out of the room.
+
+## Suggested Frontend Implementation Order
+
+1. Build catalog picker from `/catalog/home` or `/catalog/titles`.
+2. Build create room from movie page using `POST /rooms` with `titleId`.
+3. Build create empty lobby using `POST /rooms` without `titleId`.
+4. Handle `ALREADY_IN_ROOM` and retry with `force=true` after confirmation.
+5. Build join-by-code route using `GET /rooms/code/:code`.
+6. Connect to `/rooms` socket with JWT.
+7. Emit `room:join` and render returned room/member state.
+8. Add lobby UI for `room.title === null`.
+9. Add playback URL fetch only when a title exists.
+10. Add `title:change` and `title:clear` host flows.
+11. Add `title:changed` listener for all clients.
+12. Add host playback controls and heartbeat.
+13. Add `sync:state` drift correction.
+14. Add chat.
+15. Add LiveKit voice token and voice controls.
+16. Add invite creation, invite dashboard, decline, and accept flows.
+17. Add member list events.
+18. Add moderation: mute, mute-all, kick, transfer host, end room.
+
+## Quick API/Event Checklist
+
+HTTP:
 
 - `GET /catalog/home`
 - `GET /catalog/titles`
-- `GET /rooms/code/:code`
+- `GET /catalog/titles/:slug`
+- `GET /catalog/genres`
 - `POST /rooms`
 - `POST /rooms?force=true`
-- `POST /rooms/:roomId/voice-token`
+- `GET /rooms/code/:code`
 - `GET /rooms/:roomId/messages`
+- `POST /rooms/:roomId/voice-token`
 - `POST /rooms/:roomId/invitations`
 - `DELETE /rooms/:roomId/invitations/:invitationId`
 - `GET /users/me/invitations`
 - `GET /streaming/titles/:titleId/playback`
 
-Swagger does not document Socket.io events. Use this file as the socket contract for `room:join`, playback control, chat, member events, moderation, and room end.
+Socket client-to-server:
+
+- `room:join`
+- `room:leave`
+- `title:change`
+- `title:clear`
+- `control:play`
+- `control:pause`
+- `control:seek`
+- `control:heartbeat`
+- `chat:send`
+- `member:mute`
+- `member:mute-all`
+- `member:kick`
+- `host:transfer`
+- `room:end`
+
+Socket server-to-client:
+
+- `title:changed`
+- `sync:state`
+- `member:joined`
+- `member:left`
+- `member:offline`
+- `member:updated`
+- `member:kicked`
+- `you:kicked`
+- `host:transferred`
+- `chat:message`
+- `room:ended`
+- `error`
+
+## Swagger Coverage
+
+Swagger shows the HTTP side:
+
+- `POST /rooms` has optional `titleId`.
+- `POST /rooms` has optional `force` query.
+- `RoomInvitationDto.room.title` is nullable.
+- Playback URL, invitations, messages, and voice-token endpoints are listed.
+
+Swagger does not show Socket.io events. Use this guide for all socket contracts.
