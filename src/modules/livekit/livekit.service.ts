@@ -4,12 +4,17 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AccessToken, RoomServiceClient, TrackType } from 'livekit-server-sdk';
+import {
+  AccessToken,
+  RoomServiceClient,
+  TrackSource,
+  TrackType,
+} from 'livekit-server-sdk';
 
 /**
- * Voice plane (AGENTS.md §7). Backend mints short-lived, room-scoped tokens;
- * mute is enforced server-side via the LiveKit server SDK, never just a UI flag.
- * [POST-MVP] video calling reuses the same rooms — enable video tracks.
+ * Media plane (AGENTS.md §7). Backend mints short-lived, room-scoped tokens
+ * that permit audio, video, and screen share. Mute is enforced server-side
+ * via the LiveKit server SDK, never just a UI flag.
  */
 @Injectable()
 export class LivekitService {
@@ -74,7 +79,23 @@ export class LivekitService {
       roomJoin: true,
       room: this.roomName(roomId),
       canPublish: true,
+      // Explicitly whitelist every media source. `canPublish: true` alone
+      // permits all sources per the docs, but some client-side integrations
+      // read `canPublishSources` directly and refuse to publish a track type
+      // that isn't listed — belt-and-suspenders.
+      canPublishSources: [
+        TrackSource.MICROPHONE,
+        TrackSource.CAMERA,
+        TrackSource.SCREEN_SHARE,
+        TrackSource.SCREEN_SHARE_AUDIO,
+      ],
       canSubscribe: true,
+      // Data channel — needed for track metadata sync in some LiveKit
+      // client SDKs (they use it for aspect-ratio / camera-facing hints).
+      canPublishData: true,
+      // Lets participants flip their own "camera on/off" metadata so the
+      // rest of the room can render a proper offline avatar when off.
+      canUpdateOwnMetadata: true,
       roomAdmin: isHost,
     });
     return token.toJwt();
