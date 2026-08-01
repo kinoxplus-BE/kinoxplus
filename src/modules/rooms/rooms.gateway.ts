@@ -15,6 +15,7 @@ import { WsAllExceptionsFilter } from '../../common/filters/ws-exceptions.filter
 import type { JwtPayload } from '../../common/types';
 import { ChatService } from '../chat/chat.service';
 import { LivekitService } from '../livekit/livekit.service';
+import { StreamingService } from '../streaming/streaming.service';
 import {
   ChangeTitleDto,
   ChatSendDto,
@@ -71,6 +72,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly chat: ChatService,
     private readonly livekit: LivekitService,
     private readonly jwt: JwtService,
+    private readonly streaming: StreamingService,
   ) {}
 
   // ---------- Connection auth: JWT in handshake.auth.token ----------
@@ -140,8 +142,21 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       authoritative: true,
     });
 
+    // Resolve the playback URL inline so the client can start fetching
+    // the HLS manifest immediately — saves the extra REST round trip
+    // that used to sit between "I know the movie" and "I have the URL
+    // to feed the player". On slow networks that's 500ms-2s of wall time.
+    const playback = room.title?.id
+      ? await this.streaming.safeResolvePlayback(room.title.id)
+      : null;
+
     // Late joiners receive the authoritative state and seek to it.
-    return { room, state: { ...state, serverTs: Date.now() }, members };
+    return {
+      room,
+      state: { ...state, serverTs: Date.now() },
+      members,
+      playback,
+    };
   }
 
   @SubscribeMessage('room:leave')
@@ -385,11 +400,20 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.data.userId,
       dto.titleId,
     );
-    this.server.to(dto.roomId).emit('title:changed', {
+    // Resolve the URL in parallel with the broadcast so the wire delivery
+    // starts as soon as either promise settles. On slow networks the
+    // client can start prefetching HLS as soon as this arrives instead
+    // of firing a separate GET /streaming/titles/:id/playback afterward.
+    const playback = room.title?.id
+      ? await this.streaming.safeResolvePlayback(room.title.id)
+      : null;
+    const payload = {
       title: room.title,
       state: { ...state, serverTs: Date.now() },
-    });
-    return { title: room.title, state: { ...state, serverTs: Date.now() } };
+      playback,
+    };
+    this.server.to(dto.roomId).emit('title:changed', payload);
+    return payload;
   }
 
   /** Host drops the current movie back to lobby mode — chat/voice/video
@@ -403,11 +427,13 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       dto.roomId,
       client.data.userId,
     );
-    this.server.to(dto.roomId).emit('title:changed', {
+    const payload = {
       title: null,
       state: { ...state, serverTs: Date.now() },
-    });
-    return { title: null, state: { ...state, serverTs: Date.now() } };
+      playback: null,
+    };
+    this.server.to(dto.roomId).emit('title:changed', payload);
+    return payload;
   }
 
   private broadcastState(

@@ -12,9 +12,9 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { SubscriptionGuard } from '../../common/guards/subscription.guard';
 import { ApiEnvelope } from '../../common/swagger/api-envelope.decorator';
-import { Role, TitleStatus } from '../../generated/prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { Role } from '../../generated/prisma/client';
 import { DirectUploadDto, PlaybackUrlDto } from './dto/streaming-responses.dto';
+import { StreamingService } from './streaming.service';
 import { VIDEO_PROVIDER, type VideoProvider } from './video-provider.interface';
 
 @ApiTags('Streaming')
@@ -22,7 +22,7 @@ import { VIDEO_PROVIDER, type VideoProvider } from './video-provider.interface';
 export class StreamingController {
   constructor(
     @Inject(VIDEO_PROVIDER) private readonly video: VideoProvider,
-    private readonly prisma: PrismaService,
+    private readonly streaming: StreamingService,
   ) {}
 
   /** Admin ingest: allocate a direct-creator upload for a title. */
@@ -55,34 +55,13 @@ export class StreamingController {
   @Header('Cache-Control', 'private, max-age=300')
   @Get('titles/:titleId/playback')
   async playback(@Param('titleId') titleId: string) {
-    const title = await this.prisma.title.findUnique({
-      where: { id: titleId },
-      select: { streamVideoId: true, pocPlaybackUrl: true, status: true },
-    });
-    if (
-      !title ||
-      title.status !== TitleStatus.READY ||
-      (!title.streamVideoId && !title.pocPlaybackUrl)
-    ) {
+    const resolved = await this.streaming.resolvePlayback(titleId);
+    if (!resolved) {
       throw new NotFoundException({
         code: 'TITLE_NOT_PLAYABLE',
         message: 'Title not found or not ready for playback.',
       });
     }
-
-    if (title.pocPlaybackUrl) {
-      return { url: title.pocPlaybackUrl, provider: 'poc-hls' };
-    }
-
-    const streamVideoId = title.streamVideoId;
-    if (!streamVideoId) {
-      throw new NotFoundException({
-        code: 'TITLE_NOT_PLAYABLE',
-        message: 'Title not found or not ready for playback.',
-      });
-    }
-
-    const url = await this.video.getSignedPlaybackUrl(streamVideoId);
-    return { url, provider: 'cloudflare-stream' };
+    return resolved;
   }
 }
