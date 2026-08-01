@@ -317,6 +317,21 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await this.rooms.assertHost(dto.roomId, client.data.userId);
     await this.rooms.endRoom(dto.roomId);
     this.lastHeartbeatBroadcast.delete(dto.roomId);
+
+    // Two events, in order, before we tear down socket membership:
+    //   1. sync:state with isPlaying=false — reuses the client's existing
+    //      drift-correction handler to STOP the video player. Without
+    //      this, `room:ended` alone lets the movie keep playing while
+    //      the app races to unmount the room screen.
+    //   2. room:ended — signals lifecycle so the client can navigate away.
+    // Both target every socket in the room; socketsLeave runs last so
+    // neither emit gets dropped.
+    this.server.to(dto.roomId).emit('sync:state', {
+      positionSec: 0,
+      isPlaying: false,
+      serverTs: Date.now(),
+      authoritative: true,
+    });
     this.server.to(dto.roomId).emit('room:ended', { roomId: dto.roomId });
     this.server.in(dto.roomId).socketsLeave(dto.roomId);
   }
