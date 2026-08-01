@@ -118,7 +118,27 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await client.join(dto.roomId);
     await this.rooms.setPresence(userId, client.id, dto.roomId);
 
+    // Delta event for animations / toasts.
     client.to(dto.roomId).emit('member:joined', { user: member.user });
+    // Authoritative snapshot — self-healing so any client that missed
+    // the delta (or has a stale local list) reconciles automatically.
+    // Fires to EVERYONE in the room including the joiner, so both the
+    // joiner's ack handler and their snapshot handler agree.
+    await this.broadcastMembersSnapshot(dto.roomId);
+
+    // Fire `sync:state` directly to the joining socket. This hits the
+    // client's normal drift-correction handler (the one wired for
+    // periodic sync ticks), guaranteeing the video seeks to the host's
+    // current position without racing with the HLS player's own
+    // resume-from-cached-position behavior. Fixes the "rejoin resumes
+    // at old position" bug without any client contract change.
+    client.emit('sync:state', {
+      ...state,
+      serverTs: Date.now(),
+      /** True on initial join / rejoin — clients can force-seek even
+       *  if their local position looks close to authoritative. */
+      authoritative: true,
+    });
 
     // Late joiners receive the authoritative state and seek to it.
     return { room, state: { ...state, serverTs: Date.now() }, members };
@@ -134,6 +154,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await client.leave(dto.roomId);
     await this.rooms.clearPresence(userId);
     this.server.to(dto.roomId).emit('member:left', { userId });
+    await this.broadcastMembersSnapshot(dto.roomId);
     return { left: true };
   }
 
@@ -143,6 +164,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.server.to(event.roomId).emit('member:left', {
         userId: event.userId,
       });
+      await this.broadcastMembersSnapshot(event.roomId);
 
       const socketId = await this.rooms.getPresenceSocketId(event.userId);
       if (socketId) {
@@ -310,6 +332,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
     await this.rooms.clearPresence(dto.targetUserId);
+    await this.broadcastMembersSnapshot(dto.roomId);
   }
 
   /** Host mutes every non-host member at once. */
@@ -396,5 +419,26 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       isPlaying: state.isPlaying,
       serverTs: Date.now(),
     });
+  }
+
+  /**
+   * Broadcast the AUTHORITATIVE full members list to the room. Self-healing —
+   * clients that missed a `member:joined` / `member:left` delta (network
+   * hiccup, event-ordering race, buggy merge logic) reconcile on the next
+   * membership change. Small payload (<= 20 members × ~50 bytes = 1KB) even
+   * without compression; ships in a single gzipped frame after compression.
+   */
+  private async broadcastMembersSnapshot(roomId: string): Promise<void> {
+    try {
+      const members = await this.rooms.activeMembers(roomId);
+      this.server.to(roomId).emit('members:snapshot', { members });
+    } catch (err) {
+      // Never fail the caller's request on snapshot broadcast failure —
+      // delta events already fired and the next membership change will
+      // re-broadcast the snapshot anyway.
+      this.logger.warn(
+        `members:snapshot broadcast failed for ${roomId}: ${String(err)}`,
+      );
+    }
   }
 }
