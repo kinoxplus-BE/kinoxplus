@@ -18,7 +18,17 @@ export class RedisIoAdapter extends IoAdapter {
   }
 
   override createIOServer(port: number, options?: ServerOptions): Server {
-    const server = super.createIOServer(port, options) as Server;
+    // Compress WebSocket frames >1KB. Every chat message, sync:state
+    // broadcast, and heartbeat gets deflated — on slow mobile networks
+    // this is the difference between a smooth room and dropped frames.
+    // Threshold matches our HTTP compression to avoid CPU on tiny messages.
+    const optionsWithCompression: ServerOptions = {
+      ...(options ?? ({} as ServerOptions)),
+      perMessageDeflate: {
+        threshold: 1024,
+      },
+    };
+    const server = super.createIOServer(port, optionsWithCompression) as Server;
     if (this.adapterConstructor) {
       server.adapter(this.adapterConstructor);
     }

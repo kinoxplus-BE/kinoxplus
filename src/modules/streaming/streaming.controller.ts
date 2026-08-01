@@ -49,7 +49,10 @@ export class StreamingController {
   })
   @ApiEnvelope(PlaybackUrlDto, { description: 'Playable title URL' })
   @UseGuards(SubscriptionGuard)
-  @Header('Cache-Control', 'private, max-age=30')
+  // Signed Cloudflare Stream URLs are valid for hours by default; POC HLS
+  // URLs are static. 30s was extremely conservative — 5 min saves a round
+  // trip every time playback stalls or the client resumes from background.
+  @Header('Cache-Control', 'private, max-age=300')
   @Get('titles/:titleId/playback')
   async playback(@Param('titleId') titleId: string) {
     const title = await this.prisma.title.findUnique({

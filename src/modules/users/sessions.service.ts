@@ -1,6 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
+// Safety cap — real users have ≤10 devices; anything past this is a token-
+// leak signature and we shouldn't ship a 10MB body to defend a broken client.
+const MAX_SESSIONS_RETURNED = 100;
+
 @Injectable()
 export class SessionsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -18,6 +22,7 @@ export class SessionsService {
         expiresAt: { gt: new Date() },
       },
       orderBy: { lastUsedAt: 'desc' },
+      take: MAX_SESSIONS_RETURNED,
       select: {
         id: true,
         deviceName: true,

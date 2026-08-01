@@ -13,8 +13,12 @@ import {
   GenreDto,
 } from './dto/catalog-responses.dto';
 
+// Catalog contents change slowly (once a week at most). Serve fresh for 5
+// minutes, then serve stale-but-good for an hour while revalidating in the
+// background. On slow networks the client sees the previous body instantly
+// (near-zero latency) and quietly refreshes when it can.
 const PUBLIC_CATALOG_CACHE_CONTROL =
-  'public, max-age=60, stale-while-revalidate=300';
+  'public, max-age=300, stale-while-revalidate=3600';
 
 /** Browsing is public; playback is gated in the streaming module. */
 @ApiTags('Catalog')

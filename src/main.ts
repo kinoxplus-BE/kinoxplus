@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import * as Sentry from '@sentry/node';
+import compression from 'compression';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
@@ -33,6 +34,16 @@ async function bootstrap(): Promise<void> {
   }
 
   app.use(helmet());
+  // gzip every response over 1KB. JSON payloads (catalog home, invitations,
+  // sessions, chat history) shrink 5-10x; on 3G that's seconds → 100s of ms.
+  // Level 6 is Node's default sweet spot — higher levels burn CPU with
+  // negligible extra shrink on JSON.
+  app.use(
+    compression({
+      threshold: 1024,
+      level: 6,
+    }),
+  );
   app.enableCors({
     origin: parseCorsOrigins(config.get<string>('CORS_ORIGINS', '')),
     credentials: true,

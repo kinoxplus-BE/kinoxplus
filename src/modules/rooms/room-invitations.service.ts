@@ -286,6 +286,9 @@ export class RoomInvitationsService {
         OR: [{ invitedUserId: userId }, ...emailFilter],
       },
       orderBy: { createdAt: 'desc' },
+      // Safety cap — nobody legitimately has >100 pending invitations.
+      // Prevents a runaway from shipping a huge body to a slow client.
+      take: 100,
       select: {
         id: true,
         createdAt: true,

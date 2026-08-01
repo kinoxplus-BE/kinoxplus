@@ -36,6 +36,11 @@ interface RoomSocket extends Socket {
   data: { userId: string };
 }
 
+// Minimum ms between two `sync:state` broadcasts triggered by heartbeat
+// for the same room. Client-driven control:play/pause/seek still fires
+// immediately — this only rate-limits the periodic drift-correction ticks.
+const HEARTBEAT_BROADCAST_MIN_MS = 4000;
+
 /**
  * ⭐ Watch Room control plane (AGENTS.md §6).
  * Playback (HLS) never touches this layer; voice rides LiveKit. This gateway
@@ -53,6 +58,11 @@ interface RoomSocket extends Socket {
 @WebSocketGateway({ namespace: '/rooms', cors: true })
 export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(RoomsGateway.name);
+  // In-memory throttle map — roomId → last-broadcast timestamp (ms).
+  // Bounded by the number of concurrently active rooms; endRoom prunes.
+  // Not persisted across instances: worst case, briefly higher broadcast
+  // rate right after a rolling deploy. Acceptable for a drift tick.
+  private readonly lastHeartbeatBroadcast = new Map<string, number>();
 
   @WebSocketServer() server!: Namespace;
 
@@ -197,7 +207,17 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.broadcastState(dto.roomId, state);
   }
 
-  /** Authoritative host tick (~2s) to correct drift. Redis-only write. */
+  /**
+   * Authoritative host tick — client sends every ~2s to correct drift.
+   *
+   * Redis is always updated (cheap). The fanout `sync:state` broadcast is
+   * throttled server-side to at most one per HEARTBEAT_BROADCAST_MIN_MS per
+   * room, and skipped entirely when playback is paused (nothing to sync).
+   * This is the single biggest win for slow-network members — cuts state
+   * frames by ~50% without changing the client contract or losing sync
+   * quality on the happy path (real drift corrections still fire on
+   * control:play / pause / seek immediately).
+   */
   @SubscribeMessage('control:heartbeat')
   async onHeartbeat(
     @ConnectedSocket() client: RoomSocket,
@@ -205,6 +225,14 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     await this.rooms.assertHost(dto.roomId, client.data.userId);
     const state = await this.rooms.heartbeat(dto.roomId, dto.positionSec);
+
+    if (!state.isPlaying) return; // paused → no sync needed
+
+    const now = Date.now();
+    const last = this.lastHeartbeatBroadcast.get(dto.roomId) ?? 0;
+    if (now - last < HEARTBEAT_BROADCAST_MIN_MS) return;
+
+    this.lastHeartbeatBroadcast.set(dto.roomId, now);
     this.broadcastState(dto.roomId, state);
   }
 
@@ -251,6 +279,7 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     await this.rooms.assertHost(dto.roomId, client.data.userId);
     await this.rooms.endRoom(dto.roomId);
+    this.lastHeartbeatBroadcast.delete(dto.roomId);
     this.server.to(dto.roomId).emit('room:ended', { roomId: dto.roomId });
     this.server.in(dto.roomId).socketsLeave(dto.roomId);
   }
