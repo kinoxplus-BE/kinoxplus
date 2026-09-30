@@ -98,6 +98,37 @@ export class UsersService {
     return user;
   }
 
+  /**
+   * Aggregated activity counters shown on the Profile screen. Kept in a single
+   * endpoint so the mobile app can render the whole stats row in one round-trip
+   * instead of paginating rooms, history and watchlist separately.
+   *
+   * Friendship and Watchlist tables don't exist yet — those fields ship as 0
+   * for now. When the models land, replace the constants below with real
+   * counts; the DTO contract stays the same.
+   */
+  async stats(userId: string) {
+    const [roomsHosted, moviesWatched, watchAgg] =
+      await this.prisma.$transaction([
+        this.prisma.room.count({ where: { hostId: userId } }),
+        this.prisma.watchHistory.count({
+          where: { userId, completed: true },
+        }),
+        this.prisma.watchHistory.aggregate({
+          where: { userId },
+          _sum: { positionSec: true },
+        }),
+      ]);
+    const totalSec = watchAgg._sum.positionSec ?? 0;
+    return {
+      roomsHosted,
+      hoursWatched: Math.floor(totalSec / 3600),
+      moviesWatched,
+      friendsCount: 0,
+      watchlistCount: 0,
+    };
+  }
+
   updateProfile(userId: string, dto: UpdateProfileDto) {
     return this.prisma.user
       .update({

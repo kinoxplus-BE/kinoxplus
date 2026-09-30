@@ -27,6 +27,7 @@ import { RoomInvitationDto } from '../rooms/dto/invitation-responses.dto';
 import { RoomInvitationsService } from '../rooms/room-invitations.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
 import { SessionDto } from './dto/session-responses.dto';
+import { UserStatsDto } from './dto/stats-responses.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { SessionsService } from './sessions.service';
 import { UsersService } from './users.service';
@@ -54,6 +55,17 @@ export class UsersController {
   @ApiResponse({ status: 200, description: 'Profile updated' })
   updateProfile(@CurrentUser() user: AuthUser, @Body() dto: UpdateProfileDto) {
     return this.users.updateProfile(user.id, dto);
+  }
+
+  @Get('me/stats')
+  @ApiOperation({
+    summary: 'Profile activity counters',
+    description:
+      'Powers the stats row on the Profile screen. Rooms hosted, hours watched, movies completed, plus placeholder counts for friends and watchlist (both ship in a follow-up).',
+  })
+  @ApiEnvelope(UserStatsDto, { description: 'Aggregated counters' })
+  stats(@CurrentUser() user: AuthUser) {
+    return this.users.stats(user.id);
   }
 
   // ────────────────────── Avatar upload ──────────────────────

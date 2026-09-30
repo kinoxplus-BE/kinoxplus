@@ -7,7 +7,10 @@ import { timingSafeEqual } from 'node:crypto';
 export class FlutterwaveProvider {
   constructor(private readonly config: ConfigService) {}
 
-  initializeTransaction(_userId: string, _planId: string): Promise<never> {
+  initializeTransaction(
+    _userId: string,
+    _planId: string,
+  ): Promise<{ authorizationUrl: string; reference: string }> {
     throw new NotImplementedException(
       'flutterwave.initializeTransaction — sprint 6',
     );

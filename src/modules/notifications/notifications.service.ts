@@ -49,17 +49,56 @@ export class NotificationsService implements OnModuleInit {
     });
   }
 
+  /** Notifications screen feed. Newest first, capped so old accounts don't
+   * pull thousands of rows on open. Pagination is a follow-up if it's needed. */
+  list(userId: string, limit = 50) {
+    return this.prisma.inAppNotification.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(limit, 100),
+    });
+  }
+
+  unreadCount(userId: string) {
+    return this.prisma.inAppNotification.count({
+      where: { userId, readAt: null },
+    });
+  }
+
+  markAllRead(userId: string) {
+    return this.prisma.inAppNotification.updateMany({
+      where: { userId, readAt: null },
+      data: { readAt: new Date() },
+    });
+  }
+
   /**
    * Fan out a push to every device this user has registered. Data payload
    * lets the mobile app deep-link (e.g. `{ kind: "room_invite", roomId, code }`).
    * Failures are logged but never thrown — never fail the caller's request
    * because a device happens to be offline.
+   *
+   * Always writes an InAppNotification row too, so the Notifications screen
+   * reflects the item even when push was undelivered (no devices, disabled
+   * OS-level, or FCM not configured in dev).
    */
   async sendToUser(
     userId: string,
-    notification: { title: string; body: string },
+    notification: { title: string; body: string; kind?: string },
     data: PushData = {},
   ): Promise<void> {
+    // Persist first — an in-app row is the reliable delivery channel; push
+    // is best-effort.
+    await this.prisma.inAppNotification.create({
+      data: {
+        userId,
+        kind: notification.kind ?? data.kind ?? 'general',
+        title: notification.title,
+        body: notification.body,
+        data: Object.keys(data).length > 0 ? (data as never) : undefined,
+      },
+    });
+
     if (!this.messaging) {
       this.logger.log(
         `[DEV] push to ${userId}: ${notification.title} — ${notification.body}`,
@@ -76,7 +115,7 @@ export class NotificationsService implements OnModuleInit {
     const tokens = devices.map((d) => d.fcmToken);
     const response = await this.messaging.sendEachForMulticast({
       tokens,
-      notification,
+      notification: { title: notification.title, body: notification.body },
       data,
     });
 

@@ -52,6 +52,7 @@ model User {
   twoFactorBackupCodes TwoFactorBackupCode[]
   invitesSent     RoomInvitation[] @relation("RoomInvitesSent")
   invitesReceived RoomInvitation[] @relation("RoomInvitesReceived")
+  inAppNotifications InAppNotification[]
 
   @@index([role])
 }
@@ -128,6 +129,27 @@ model OtpChallenge {
   @@index([identifier, purpose, createdAt])
   // Cleanup job prunes by expiry (see CleanupProcessor).
   @@index([expiresAt])
+}
+
+/// In-app notification feed row. Written alongside every push send so users
+/// who have push disabled — or who missed the delivery — still see the item
+/// on the Notifications screen. `data` mirrors the push data payload for
+/// deep-linking (e.g. { kind: "room_invite", roomId, code }).
+model InAppNotification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  // Feed query shape: userId + createdAt DESC.
+  @@index([userId, createdAt])
+  // Unread badge lookup.
+  @@index([userId, readAt])
 }
 
 // ---------- Catalog ----------
