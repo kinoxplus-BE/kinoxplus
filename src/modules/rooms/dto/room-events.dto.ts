@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -69,4 +70,27 @@ export class TransferHostDto extends RoomRefDto {
 export class ChangeTitleDto extends RoomRefDto {
   @IsString()
   titleId!: string;
+}
+
+/** A single-emoji reaction floated into the room. Not persisted — the point is
+ * ephemeral crowd noise, so the client's UI just plays the animation and drops
+ * it. Length capped tight so we don't accept whole comments here. */
+export class ReactionSendDto extends RoomRefDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(8)
+  emoji!: string;
+}
+
+/** Announce this socket is starting to publish a screen-share track. `device`
+ *  is optional and MUST match the shape used for this socket's LiveKit token
+ *  — provide it when the token was minted with a device suffix (post-pivot
+ *  builds), omit it when the token used the bare-`userId` identity
+ *  (pre-pivot builds). The presenter identity we broadcast has to line up
+ *  with the LiveKit participant identity, otherwise viewers can't find the
+ *  screen-share track. */
+export class PresenterStartDto extends RoomRefDto {
+  @IsOptional()
+  @IsIn(['mobile', 'web'])
+  device?: 'mobile' | 'web';
 }

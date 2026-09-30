@@ -36,8 +36,12 @@ import type {
 } from './dto/otp.dto';
 import type { RefreshDto } from './dto/refresh.dto';
 import type { RegisterDto } from './dto/register.dto';
+import type { PairRedeemDto } from './dto/pair.dto';
 import type { ResetPasswordDto } from './dto/reset-password.dto';
 
+// Pair-code TTL: 60s is short enough that a leaked code has a tiny blast
+// radius, long enough that a user can reach for their laptop and scan.
+const PAIR_CODE_TTL_SEC = 60;
 const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const OTP_MAX_ATTEMPTS = 3;
 const OTP_RESEND_COOLDOWN_SEC = 60; // per identifier+purpose
@@ -825,6 +829,86 @@ export class AuthService {
   }
 
   // ────────────────────── Internals ──────────────────────
+
+  // ────────────────────── QR device pairing ──────────────────────
+
+  /**
+   * Mint a short-lived one-time code for the mobile → web handoff. The
+   * mobile app renders it as a QR the user scans with their laptop. The
+   * laptop then hits POST /auth/pair/redeem with the code and receives a
+   * full auth session for the same userId. Code lifespan is deliberately
+   * short (60s) so a shoulder-surfed screen doesn't hand attackers a
+   * long-lived credential.
+   */
+  async createPairCode(userId: string): Promise<{
+    code: string;
+    expiresAt: string;
+    qrPayload: string;
+  }> {
+    // 12 hex chars → 48 bits of entropy. Combined with the 60s window and
+    // the throttler on the redeem endpoint, brute force is infeasible.
+    const code = randomBytes(6).toString('hex');
+    await this.redis.client.set(
+      `auth:pair:${code}`,
+      JSON.stringify({ userId, createdAt: Date.now() }),
+      'EX',
+      PAIR_CODE_TTL_SEC,
+    );
+    const webUrl = (
+      this.config.get<string>('WEB_URL') ?? 'http://localhost:5173'
+    ).replace(/\/$/, '');
+    return {
+      code,
+      expiresAt: new Date(Date.now() + PAIR_CODE_TTL_SEC * 1000).toISOString(),
+      qrPayload: `${webUrl}/pair/${code}`,
+    };
+  }
+
+  /**
+   * Redeem a pair code. Atomic via Redis GETDEL — two concurrent redeems of
+   * the same code, exactly one wins. The winner receives a full auth
+   * session (access token + refresh token) for the userId that created the
+   * pair code. Same response shape as login, so the web client's auth
+   * bootstrap is identical to a fresh sign-in from mobile.
+   */
+  async redeemPairCode(dto: PairRedeemDto, session: SessionContext = {}) {
+    const raw = await this.redis.client.getdel(`auth:pair:${dto.code}`);
+    if (!raw) {
+      throw new BadRequestException({
+        code: 'PAIR_CODE_INVALID',
+        message: 'This pair code is expired or has already been used.',
+      });
+    }
+    let userId: string;
+    try {
+      const parsed = JSON.parse(raw) as { userId?: unknown };
+      if (typeof parsed.userId !== 'string' || parsed.userId.length === 0) {
+        throw new Error('bad payload');
+      }
+      userId = parsed.userId;
+    } catch {
+      throw new BadRequestException({
+        code: 'PAIR_CODE_INVALID',
+        message: 'This pair code is invalid.',
+      });
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: SESSION_USER_SELECT,
+    });
+    if (!user) {
+      // Account was deleted between issue and redeem — rare, but real.
+      throw new BadRequestException({
+        code: 'PAIR_CODE_INVALID',
+        message: 'This pair code is no longer valid.',
+      });
+    }
+    const tokens = await this.issueTokens(user.id, user.role, {
+      device: dto.device ?? session.device,
+      ip: session.ip,
+    });
+    return { user, ...tokens };
+  }
 
   /**
    * Signs an access token and persists a hashed refresh token. When

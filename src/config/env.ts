@@ -128,8 +128,22 @@ export const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+// Fails boot if the operator forgot to set a real WEB_URL in production —
+// the pair-QR handoff embeds this URL, so a localhost default in prod
+// silently produces QR codes users' laptops can never open.
+const envSchemaWithProdChecks = envSchema.refine(
+  (env) =>
+    env.NODE_ENV !== 'production' ||
+    (!env.WEB_URL.includes('localhost') && !env.WEB_URL.includes('127.0.0.1')),
+  {
+    message:
+      'WEB_URL must not point at localhost in production — set it to the deployed web client origin (e.g. https://kinoxplus.com).',
+    path: ['WEB_URL'],
+  },
+);
+
 export function validateEnv(config: Record<string, unknown>): Env {
-  const result = envSchema.safeParse(config);
+  const result = envSchemaWithProdChecks.safeParse(config);
   if (!result.success) {
     const details = result.error.issues
       .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)

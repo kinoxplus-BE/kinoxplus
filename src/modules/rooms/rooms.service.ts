@@ -36,6 +36,50 @@ const MEMBER_USER_SELECT = {
 // No 0/O/1/I/L — codes get read out loud over voice chat.
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const PRESENCE_TTL_SEC = 60 * 60 * 6;
+// Presenter state is transient — longer than a real session, short enough to
+// self-clean after a room is abandoned without an explicit stop. 24h is far
+// beyond any realistic single watch and safely well under Redis's max.
+const PRESENTER_TTL_SEC = 60 * 60 * 24;
+
+/** Which device a member is presenting from. Mirrors LiveKit identity suffix. */
+export type PresenterDevice = 'mobile' | 'web';
+
+/**
+ * Snapshot of who is currently sharing their screen in a room.
+ *
+ * `device` is optional to match how LiveKit tokens are minted: when the
+ * client requested a token without a device suffix (pre-pivot builds),
+ * `device` is undefined and `identity` is the bare `userId`. When the
+ * client passed a device explicitly, `identity` is `userId#device`.
+ * The pair is authoritative — clients use `identity` (not just `userId`)
+ * to look up the presenter in the LiveKit participant list.
+ */
+export interface RoomPresenter {
+  userId: string;
+  device?: PresenterDevice;
+  identity: string;
+  /** Wall-clock ms when the presenter started sharing. */
+  since: number;
+}
+
+/**
+ * Compare-and-delete for the presenter key, atomic on the Redis server.
+ * Reads the stored JSON, parses just enough to compare `userId` against
+ * the caller's, and deletes only when they match. Returns the raw JSON
+ * of the cleared record so the caller can parse and broadcast the
+ * previous presenter, or nil when no clear happened.
+ */
+const CLEAR_PRESENTER_IF_MATCHES_LUA = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return false end
+local ok, parsed = pcall(cjson.decode, raw)
+if not ok then return false end
+if parsed.userId == ARGV[1] then
+  redis.call('DEL', KEYS[1])
+  return raw
+end
+return false
+`;
 
 @Injectable()
 export class RoomsService {
@@ -54,6 +98,9 @@ export class RoomsService {
   }
   private presenceKey(userId: string) {
     return `presence:user:${userId}`;
+  }
+  private presenterKey(roomId: string) {
+    return `room:${roomId}:presenter`;
   }
 
   // ---------- Lifecycle ----------
@@ -662,6 +709,94 @@ export class RoomsService {
     try {
       const parsed = JSON.parse(raw) as { socketId?: string };
       return typeof parsed.socketId === 'string' ? parsed.socketId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ---------- Presenter (screen share) ----------
+
+  /** Who, if anyone, is currently screen-sharing in this room. */
+  async getPresenter(roomId: string): Promise<RoomPresenter | null> {
+    const raw = await this.redis.client.get(this.presenterKey(roomId));
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as RoomPresenter;
+      const deviceOk =
+        parsed.device === undefined ||
+        parsed.device === 'mobile' ||
+        parsed.device === 'web';
+      if (
+        typeof parsed.userId === 'string' &&
+        deviceOk &&
+        typeof parsed.identity === 'string' &&
+        typeof parsed.since === 'number'
+      ) {
+        return parsed;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Set the current presenter. Last-write-wins: whoever most recently sends
+   * `presenter:start` becomes the presenter, and the previous presenter's
+   * client should stop publishing on the `presenter:changed` broadcast.
+   *
+   * `device` is optional to mirror the LiveKit identity the client used —
+   * omit it when the voice-token was minted without a device suffix (the
+   * legacy bare-`userId` shape), pass it when the token used a suffix.
+   */
+  async setPresenter(
+    roomId: string,
+    userId: string,
+    device?: PresenterDevice,
+  ): Promise<RoomPresenter> {
+    const presenter: RoomPresenter = {
+      userId,
+      ...(device ? { device } : {}),
+      identity: device ? `${userId}#${device}` : userId,
+      since: Date.now(),
+    };
+    await this.redis.client.set(
+      this.presenterKey(roomId),
+      JSON.stringify(presenter),
+      'EX',
+      PRESENTER_TTL_SEC,
+    );
+    return presenter;
+  }
+
+  /** Drop presenter state. Room has no active screen share afterwards. */
+  async clearPresenter(roomId: string): Promise<void> {
+    await this.redis.client.del(this.presenterKey(roomId));
+  }
+
+  /**
+   * Clear the presenter only if the given userId is currently presenting.
+   * Used on socket disconnect and room leave, so we don't accidentally
+   * clear a presenter who took over between the disconnect firing and
+   * the cleanup handler running.
+   *
+   * The read + compare + delete runs as a single Lua script inside Redis
+   * so no concurrent `setPresenter` from another socket can slip between
+   * our GET and DEL and get its value overwritten.
+   */
+  async clearPresenterIfMatches(
+    roomId: string,
+    userId: string,
+  ): Promise<RoomPresenter | null> {
+    const raw = (await this.redis.client.eval(
+      CLEAR_PRESENTER_IF_MATCHES_LUA,
+      1,
+      this.presenterKey(roomId),
+      userId,
+    )) as string | null;
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as RoomPresenter;
     } catch {
       return null;
     }

@@ -24,6 +24,8 @@ import {
   JoinRoomDto,
   KickMemberDto,
   MuteDto,
+  PresenterStartDto,
+  ReactionSendDto,
   RoomRefDto,
   TransferHostDto,
 } from './dto/room-events.dto';
@@ -100,6 +102,13 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await this.rooms.clearPresence(userId);
     if (roomId) {
       this.server.to(roomId).emit('member:offline', { userId });
+      // If they were the current presenter, drop the presenter state so
+      // the room stops rendering a dead screen-share tile. Someone else
+      // can immediately claim it via `presenter:start`.
+      const cleared = await this.rooms.clearPresenterIfMatches(roomId, userId);
+      if (cleared) {
+        this.server.to(roomId).emit('presenter:changed', { presenter: null });
+      }
     }
   }
 
@@ -150,12 +159,18 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ? await this.streaming.safeResolvePlayback(room.title.id)
       : null;
 
+    // Current screen-share presenter (if any). Included in the join snapshot
+    // so late joiners immediately know which participant tile to render as
+    // the big view — no separate REST call, no race with a delta broadcast.
+    const presenter = await this.rooms.getPresenter(dto.roomId);
+
     // Late joiners receive the authoritative state and seek to it.
     return {
       room,
       state: { ...state, serverTs: Date.now() },
       members,
       playback,
+      presenter,
     };
   }
 
@@ -169,6 +184,14 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     await client.leave(dto.roomId);
     await this.rooms.clearPresence(userId);
     this.server.to(dto.roomId).emit('member:left', { userId });
+    // If they were presenting, drop the presenter state on the way out.
+    const cleared = await this.rooms.clearPresenterIfMatches(
+      dto.roomId,
+      userId,
+    );
+    if (cleared) {
+      this.server.to(dto.roomId).emit('presenter:changed', { presenter: null });
+    }
     await this.broadcastMembersSnapshot(dto.roomId);
     return { left: true };
   }
@@ -288,6 +311,83 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       body: message.body,
       createdAt: message.createdAt,
     });
+  }
+
+  /** Ephemeral emoji reaction — validated for membership, then broadcast.
+   * Nothing is stored: this is the live-reaction stream, not a comment log. */
+  @SubscribeMessage('reaction:send')
+  async onReactionSend(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: ReactionSendDto,
+  ) {
+    const userId = client.data.userId;
+    await this.rooms.assertMember(dto.roomId, userId);
+    this.server.to(dto.roomId).emit('reaction:new', {
+      userId,
+      emoji: dto.emoji,
+      ts: Date.now(),
+    });
+  }
+
+  // ---------- Presenter (screen share) ----------
+
+  /**
+   * Announce this device is starting to publish a screen-share track.
+   * Last-write-wins: the previous presenter's client should react to the
+   * `presenter:changed` broadcast by stopping its own LiveKit publish.
+   */
+  @SubscribeMessage('presenter:start')
+  async onPresenterStart(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: PresenterStartDto,
+  ) {
+    const userId = client.data.userId;
+    await this.rooms.assertMember(dto.roomId, userId);
+    const presenter = await this.rooms.setPresenter(
+      dto.roomId,
+      userId,
+      dto.device,
+    );
+    this.server.to(dto.roomId).emit('presenter:changed', { presenter });
+    return { presenter };
+  }
+
+  /**
+   * Stop presenting. Only clears if the caller is the current presenter — a
+   * stale stop from a device that got kicked out of presenter role doesn't
+   * accidentally clear the new presenter's state.
+   */
+  @SubscribeMessage('presenter:stop')
+  async onPresenterStop(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: RoomRefDto,
+  ) {
+    const userId = client.data.userId;
+    await this.rooms.assertMember(dto.roomId, userId);
+    const cleared = await this.rooms.clearPresenterIfMatches(
+      dto.roomId,
+      userId,
+    );
+    if (cleared) {
+      this.server.to(dto.roomId).emit('presenter:changed', { presenter: null });
+    }
+    return { presenter: null };
+  }
+
+  /**
+   * Host force-clears whoever is presenting. Used when a member's screen
+   * needs to come down (moderation, subject change) without waiting for the
+   * presenter's client to cooperate.
+   */
+  @SubscribeMessage('presenter:clear')
+  async onPresenterClear(
+    @ConnectedSocket() client: RoomSocket,
+    @MessageBody() dto: RoomRefDto,
+  ) {
+    await this.rooms.assertHost(dto.roomId, client.data.userId);
+    await this.rooms.clearPresenter(dto.roomId);
+    this.server.to(dto.roomId).emit('presenter:changed', { presenter: null });
+    return { presenter: null };
   }
 
   // ---------- Moderation ----------

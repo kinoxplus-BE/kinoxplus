@@ -39,6 +39,7 @@ import { CheckUsernameDto } from './dto/check-username.dto';
 import { GoogleSignInDto } from './dto/google-auth.dto';
 import { LoginDto } from './dto/login.dto';
 import { RequestOtpDto, VerifyEmailDto, VerifyOtpDto } from './dto/otp.dto';
+import { PairCreatedDto, PairRedeemDto } from './dto/pair.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -366,5 +367,43 @@ export class AuthController {
   @ApiResponse({ status: 403, description: 'TWO_FACTOR_MAX_ATTEMPTS' })
   twoFactorChallenge(@Body() dto: TwoFactorChallengeDto, @Ip() ip: string) {
     return this.auth.twoFactorChallenge(dto, { ip });
+  }
+
+  // ────────────────────── Device pairing (mobile → web) ──────────────────────
+
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @Post('pair')
+  @HttpCode(201)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Create a QR pair code (mobile → web handoff)',
+    description:
+      'The mobile app calls this when a DRM-protected app (Netflix, Prime, Disney+) blocks screen sharing. Returns { code, expiresAt, qrPayload }. Render qrPayload as a QR image; the laptop scans it, opens the web client at /pair/:code, and calls POST /auth/pair/redeem. Code lifetime is 60 seconds.',
+  })
+  @ApiEnvelope(PairCreatedDto, {
+    status: 201,
+    description: 'Pair code issued',
+  })
+  createPair(@CurrentUser() user: AuthUser) {
+    return this.auth.createPairCode(user.id);
+  }
+
+  @Public()
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @HttpCode(200)
+  @Post('pair/redeem')
+  @ApiOperation({
+    summary: 'Redeem a QR pair code (web client)',
+    description:
+      'Called by the web client after the user scans the QR from mobile. Consumes the code atomically (single-use) and returns a full auth session for the same userId as if the user had just logged in. Attach optional device metadata so the resulting session labels as "Web" in the sessions screen.',
+  })
+  @ApiEnvelope(AuthSessionDto, { description: 'Web session established' })
+  @ApiResponse({
+    status: 400,
+    description: 'PAIR_CODE_INVALID (expired, already used, or unknown)',
+  })
+  @ApiResponse({ status: 429, description: 'Too many requests (20/min)' })
+  redeemPair(@Body() dto: PairRedeemDto, @Ip() ip: string) {
+    return this.auth.redeemPairCode(dto, { ip });
   }
 }

@@ -28,6 +28,7 @@ import { CreateInvitationsDto } from './dto/create-invitations.dto';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { InvitationBatchResultDto } from './dto/invitation-responses.dto';
 import { VoiceTokenResponseDto } from './dto/room-responses.dto';
+import { VoiceTokenRequestDto } from './dto/voice-token.dto';
 import { RoomInvitationsService } from './room-invitations.service';
 import { RoomsService } from './rooms.service';
 
@@ -84,7 +85,7 @@ export class RoomsController {
   @ApiOperation({
     summary: 'Get LiveKit connection details for room audio/video',
     description:
-      'Returns the LiveKit websocket URL, room name, and short-lived token for an active room member. Use the same token for audio calls and video calls.',
+      'Returns the LiveKit websocket URL, room name, and short-lived token for an active room member. Pass `device` in the body ("mobile" or "web") when the same user connects from two devices at once — for example, the phone stays in voice while the laptop shares a Netflix tab. Omitting `device` behaves like the pre-pivot single-device flow.',
   })
   @ApiEnvelope(VoiceTokenResponseDto, {
     status: 201,
@@ -92,7 +93,11 @@ export class RoomsController {
   })
   @ApiResponse({ status: 403, description: 'ROOM_NOT_MEMBER' })
   @ApiResponse({ status: 503, description: 'LIVEKIT_NOT_CONFIGURED' })
-  async voiceToken(@CurrentUser() user: AuthUser, @Param('id') roomId: string) {
+  async voiceToken(
+    @CurrentUser() user: AuthUser,
+    @Param('id') roomId: string,
+    @Body() body: VoiceTokenRequestDto = {},
+  ) {
     await this.rooms.assertMember(roomId, user.id);
     let isHost = true;
     try {
@@ -100,7 +105,15 @@ export class RoomsController {
     } catch {
       isHost = false;
     }
-    const token = await this.livekit.mintToken(roomId, user.id, isHost);
+    // Pass through undefined when the client didn't specify — that keeps the
+    // legacy bare-`userId` identity for pre-pivot mobile builds, and gives
+    // `userId#device` only to clients that opted in.
+    const token = await this.livekit.mintToken(
+      roomId,
+      user.id,
+      isHost,
+      body.device,
+    );
     return {
       token,
       roomName: this.livekit.roomName(roomId),
