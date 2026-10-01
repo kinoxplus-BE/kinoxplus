@@ -5,4 +5,5 @@ export const QUEUES = {
   STREAMING: 'streaming',
   NOTIFICATIONS: 'notifications',
   CLEANUP: 'cleanup',
+  ROOMS: 'rooms',
 } as const;

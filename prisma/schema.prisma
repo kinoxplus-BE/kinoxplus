@@ -53,6 +53,9 @@ model User {
   invitesSent     RoomInvitation[] @relation("RoomInvitesSent")
   invitesReceived RoomInvitation[] @relation("RoomInvitesReceived")
   inAppNotifications InAppNotification[]
+  friendRequestsSent     FriendRequest[] @relation("FriendRequestsSent")
+  friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
+  watchlist              WatchlistItem[]
 
   @@index([role])
 }
@@ -131,6 +134,46 @@ model OtpChallenge {
   @@index([expiresAt])
 }
 
+/// One-way friend request. A mutual friendship exists when a row with
+/// (senderId=A, receiverId=B) is ACCEPTED; the pair is counted in both
+/// users' friend lists. Rejected / cancelled requests are either deleted
+/// (cancel/unfriend) or kept as DECLINED (so repeat requests don't spam).
+model FriendRequest {
+  id          String   @id @default(cuid())
+  senderId    String
+  sender      User     @relation("FriendRequestsSent", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId  String
+  receiver    User     @relation("FriendRequestsReceived", fields: [receiverId], references: [id], onDelete: Cascade)
+  status      FriendRequestStatus @default(PENDING)
+  createdAt   DateTime  @default(now())
+  respondedAt DateTime?
+
+  @@unique([senderId, receiverId])
+  @@index([receiverId, status])
+  @@index([senderId, status])
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+/// Save-for-later entry on the browse catalog. Server-side so a user's list
+/// follows them across devices (matches the "Add to My List" surface the
+/// mobile app already exposes).
+model WatchlistItem {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  titleId   String
+  title     Title    @relation(fields: [titleId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, titleId])
+  @@index([userId, createdAt])
+}
+
 /// In-app notification feed row. Written alongside every push send so users
 /// who have push disabled — or who missed the delivery — still see the item
 /// on the Notifications screen. `data` mirrors the push data payload for
@@ -179,6 +222,7 @@ model Title {
   genres       GenreOnTitle[]
   rooms        Room[]
   watchHistory WatchHistory[]
+  watchlist    WatchlistItem[]
 
   @@index([status])
   @@index([type])
@@ -310,11 +354,25 @@ model ChatMessage {
 model Plan {
   id            String         @id @default(cuid())
   name          String
+  tier          PlanTier       @default(FREE)
   priceKobo     Int // store minor units (kobo). Naira * 100
   currency      String         @default("NGN")
   intervalDays  Int            @default(30)
+  // Pivot-era feature caps. Enforced server-side; the client renders upgrade
+  // prompts when the active plan's cap is hit (room full, session timer up,
+  // HD screen-share toggled on a free plan).
+  maxRoomMembers    Int        @default(4)
+  maxVideoHeight    Int        @default(720) // 720 = 720p, 1080 = 1080p
+  maxSessionMinutes Int?       // null = unlimited
+  canHDScreenShare  Boolean    @default(false)
   isActive      Boolean        @default(true)
   subscriptions Subscription[]
+}
+
+enum PlanTier {
+  FREE
+  PLUS
+  PREMIUM
 }
 
 model Subscription {

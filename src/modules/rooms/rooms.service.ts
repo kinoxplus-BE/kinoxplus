@@ -12,8 +12,16 @@ import {
   RoomStatus,
   TitleStatus,
 } from '../../generated/prisma/client';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
+import { QUEUES } from '../../jobs/queues';
+import {
+  ROOM_SESSION_CAP_JOB,
+  type RoomSessionCapPayload,
+} from '../../jobs/processors/rooms.processor';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import {
   ROOM_MEMBER_FORCE_LEFT_EVENT,
   type RoomMemberForceLeftReason,
@@ -87,6 +95,8 @@ export class RoomsService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly events: EventEmitter2,
+    private readonly subscriptions: SubscriptionsService,
+    @InjectQueue(QUEUES.ROOMS) private readonly roomsQueue: Queue,
   ) {}
 
   // ---------- Redis keys (AGENTS.md §6) ----------
@@ -135,20 +145,56 @@ export class RoomsService {
       }
     }
 
+    // Cap the room size at the host's tier. If the caller asked for more
+    // than their plan allows, reject with the current cap in the error body
+    // so the client can render an upgrade prompt. When the caller didn't
+    // name a size, default silently to the plan cap.
+    const effectivePlan = await this.subscriptions.getEffectivePlan(hostId);
+    const maxMembers = (() => {
+      if (opts.maxMembers === undefined) return effectivePlan.maxRoomMembers;
+      if (opts.maxMembers > effectivePlan.maxRoomMembers) {
+        throw new ForbiddenException({
+          code: 'PLAN_LIMIT_EXCEEDED',
+          message: `Your ${effectivePlan.tier.toLowerCase()} plan supports up to ${effectivePlan.maxRoomMembers} members per room. Upgrade to invite more.`,
+          limit: effectivePlan.maxRoomMembers,
+          tier: effectivePlan.tier,
+          requested: opts.maxMembers,
+        });
+      }
+      return opts.maxMembers;
+    })();
+
     // Retry on the (unlikely) unique-code collision.
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        return await this.prisma.room.create({
+        const room = await this.prisma.room.create({
           data: {
             code: this.generateCode(),
             hostId,
             titleId: titleId ?? null,
             isPrivate: opts.isPrivate ?? true,
-            maxMembers: opts.maxMembers ?? 20,
+            maxMembers,
             members: { create: { userId: hostId } },
           },
           include: { title: { select: { id: true, name: true, slug: true } } },
         });
+        // Session-cap enforcement for plans that have one (Free: 60min).
+        // We schedule a one-off delayed job; a plan with maxSessionMinutes
+        // == null (Plus/Premium) skips it entirely. Idempotent on fire —
+        // a room that ends naturally first is a no-op.
+        if (effectivePlan.maxSessionMinutes) {
+          await this.roomsQueue.add(
+            ROOM_SESSION_CAP_JOB,
+            { roomId: room.id } satisfies RoomSessionCapPayload,
+            {
+              delay: effectivePlan.maxSessionMinutes * 60 * 1000,
+              jobId: `session-cap:${room.id}`,
+              removeOnComplete: true,
+              removeOnFail: { count: 50 },
+            },
+          );
+        }
+        return room;
       } catch (error) {
         if (attempt === 2) throw error;
       }

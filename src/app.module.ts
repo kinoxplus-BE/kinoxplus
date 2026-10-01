@@ -18,6 +18,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { ChatModule } from './modules/chat/chat.module';
+import { FriendsModule } from './modules/friends/friends.module';
 import { LivekitModule } from './modules/livekit/livekit.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { PaymentsModule } from './modules/payments/payments.module';
@@ -26,6 +27,7 @@ import { RoomsModule } from './modules/rooms/rooms.module';
 import { StreamingModule } from './modules/streaming/streaming.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { UsersModule } from './modules/users/users.module';
+import { WatchlistModule } from './modules/watchlist/watchlist.module';
 import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
 import { MailModule } from './modules/mail/mail.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -90,6 +92,8 @@ import { WebhooksModule } from './webhooks/webhooks.module';
     PaymentsModule,
     NotificationsModule,
     ChatModule,
+    FriendsModule,
+    WatchlistModule,
     AdminModule,
     WebhooksModule,
 

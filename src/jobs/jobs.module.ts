@@ -6,6 +6,7 @@ import {
   CleanupProcessor,
 } from './processors/cleanup.processor';
 import { PaymentsProcessor } from './processors/payments.processor';
+import { RoomsProcessor } from './processors/rooms.processor';
 import { QUEUES } from './queues';
 
 /** Registers every queue; producers import this module to @InjectQueue. */
@@ -17,9 +18,10 @@ import { QUEUES } from './queues';
       { name: QUEUES.STREAMING },
       { name: QUEUES.NOTIFICATIONS },
       { name: QUEUES.CLEANUP },
+      { name: QUEUES.ROOMS },
     ),
   ],
-  providers: [PaymentsProcessor, CleanupProcessor],
+  providers: [PaymentsProcessor, CleanupProcessor, RoomsProcessor],
   exports: [BullModule],
 })
 export class JobsModule implements OnApplicationBootstrap {

@@ -24,6 +24,7 @@ import { ApiEnvelope } from '../../common/swagger/api-envelope.decorator';
 import type { AuthUser } from '../../common/types';
 import { ChatService } from '../chat/chat.service';
 import { LivekitService } from '../livekit/livekit.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateInvitationsDto } from './dto/create-invitations.dto';
 import { CreateRoomDto } from './dto/create-room.dto';
 import { InvitationBatchResultDto } from './dto/invitation-responses.dto';
@@ -41,6 +42,7 @@ export class RoomsController {
     private readonly chat: ChatService,
     private readonly livekit: LivekitService,
     private readonly invitations: RoomInvitationsService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   @UseGuards(ThrottlerGuard)
@@ -108,16 +110,19 @@ export class RoomsController {
     // Pass through undefined when the client didn't specify — that keeps the
     // legacy bare-`userId` identity for pre-pivot mobile builds, and gives
     // `userId#device` only to clients that opted in.
-    const token = await this.livekit.mintToken(
-      roomId,
-      user.id,
-      isHost,
-      body.device,
-    );
+    const [token, plan] = await Promise.all([
+      this.livekit.mintToken(roomId, user.id, isHost, body.device),
+      this.subscriptions.getEffectivePlan(user.id),
+    ]);
     return {
       token,
       roomName: this.livekit.roomName(roomId),
       livekitUrl: this.livekit.connectionUrl,
+      limits: {
+        maxVideoHeight: plan.maxVideoHeight,
+        canHDScreenShare: plan.canHDScreenShare,
+        maxSessionMinutes: plan.maxSessionMinutes,
+      },
     };
   }
 
